@@ -40,4 +40,4 @@ The code supplied in this repo follow in the steps below in the production of th
 
 2-DiD MEV national estimation.Rmd (code available in repo)
 - Translates Climate-GDP changes to MEV changes (RRPI, CPPI, DTI, Income) by applying national-level GDP-MEV relationships (indirect, mediation approach) 
-- Produces final coefficient table: /home/dmedgyesi/international/DID/results/tables/DiD_final_table_Econ_Overall.csv AND /DiD_final_table_EconUrban.csv
+- Produces final coefficient table
