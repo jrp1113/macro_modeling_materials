@@ -1,0 +1,195 @@
+DIM_GEO_CODE_M49,COUNTRY_NAME,YEAR,UHC_INDX,name,ISO
+516,Namibia,2021,63,Namibia,NAM
+694,Sierra Leone,2021,41,Sierra Leone,SLE
+212,Dominica,2021,49,Dominica,DMA
+184,Cook Islands,2021,46,Cook Islands,COK
+400,Jordan,2021,65,Jordan,JOR
+410,Republic of Korea,2021,89,"Korea, Republic of",KOR
+178,Congo,2021,41,Congo,COG
+196,Cyprus,2021,81,Cyprus,CYP
+262,Djibouti,2021,44,Djibouti,DJI
+364,Iran (Islamic Republic of),2021,74,"Iran, Islamic Republic of",IRN
+392,Japan,2021,83,Japan,JPN
+328,Guyana,2021,76,Guyana,GUY
+480,Mauritius,2021,66,Mauritius,MUS
+604,Peru,2021,71,Peru,PER
+214,Dominican Republic,2021,77,Dominican Republic,DOM
+702,Singapore,2021,89,Singapore,SGP
+398,Kazakhstan,2021,80,Kazakhstan,KAZ
+450,Madagascar,2021,35,Madagascar,MDG
+324,Guinea,2021,40,Guinea,GIN
+096,Brunei Darussalam,2021,78,Brunei Darussalam,BRN
+760,Syrian Arab Republic,2021,64,Syrian Arab Republic,SYR
+798,Tuvalu,2021,52,Tuvalu,TUV
+208,Denmark,2021,82,Denmark,DNK
+356,India,2021,63,India,IND
+548,Vanuatu,2021,47,Vanuatu,VUT
+203,Czechia,2021,84,Czechia,CZE
+242,Fiji,2021,58,Fiji,FJI
+570,Niue,2021,44,Niue,NIU
+426,Lesotho,2021,53,Lesotho,LSO
+860,Uzbekistan,2021,75,Uzbekistan,UZB
+368,Iraq,2021,59,Iraq,IRQ
+104,Myanmar,2021,52,Myanmar,MMR
+031,Azerbaijan,2021,66,Azerbaijan,AZE
+840,United States of America,2021,86,United States of America,USA
+682,Saudi Arabia,2021,74,Saudi Arabia,SAU
+056,Belgium,2021,86,Belgium,BEL
+752,Sweden,2021,85,Sweden,SWE
+120,Cameroon,2021,44,Cameroon,CMR
+352,Iceland,2021,89,Iceland,ISL
+032,Argentina,2021,79,Argentina,ARG
+498,Republic of Moldova,2021,71,"Moldova, Republic of",MDA
+288,Ghana,2021,48,Ghana,GHA
+384,Côte d'Ivoire,2021,43,Côte d'Ivoire,CIV
+584,Marshall Islands,2021,59,Marshall Islands,MHL
+764,Thailand,2021,82,Thailand,THA
+862,Venezuela (Bolivarian Republic of),2021,75,"Venezuela, Bolivarian Republic of",VEN
+148,Chad,2021,29,Chad,TCD
+882,Samoa,2021,55,Samoa,WSM
+442,Luxembourg,2021,83,Luxembourg,LUX
+072,Botswana,2021,55,Botswana,BWA
+180,Democratic Republic of the Congo,2021,42,"Congo, Democratic Republic of the",COD
+430,Liberia,2021,45,Liberia,LBR
+226,Equatorial Guinea,2021,46,Equatorial Guinea,GNQ
+858,Uruguay,2021,82,Uruguay,URY
+854,Burkina Faso,2021,40,Burkina Faso,BFA
+144,Sri Lanka,2021,67,Sri Lanka,LKA
+152,Chile,2021,82,Chile,CHL
+434,Libya,2021,62,Libya,LBY
+478,Mauritania,2021,40,Mauritania,MRT
+132,Cabo Verde,2021,71,Cabo Verde,CPV
+100,Bulgaria,2021,73,Bulgaria,BGR
+404,Kenya,2021,53,Kenya,KEN
+826,United Kingdom of Great Britain and Northern Ireland,2021,88,United Kingdom of Great Britain and Northern Ireland,GBR
+688,Serbia,2021,72,Serbia,SRB
+591,Panama,2021,78,Panama,PAN
+499,Montenegro,2021,72,Montenegro,MNE
+724,Spain,2021,85,Spain,ESP
+716,Zimbabwe,2021,55,Zimbabwe,ZWE
+418,Lao People's Democratic Republic,2021,52,Lao People's Democratic Republic,LAO
+512,Oman,2021,70,Oman,OMN
+528,Netherlands (Kingdom of the),2021,85,"Netherlands, Kingdom of the",NLD
+440,Lithuania,2021,75,Lithuania,LTU
+659,Saint Kitts and Nevis,2021,79,Saint Kitts and Nevis,KNA
+705,Slovenia,2021,84,Slovenia,SVN
+887,Yemen,2021,42,Yemen,YEM
+112,Belarus,2021,79,Belarus,BLR
+748,Eswatini,2021,56,Eswatini,SWZ
+818,Egypt,2021,70,Egypt,EGY
+414,Kuwait,2021,78,Kuwait,KWT
+686,Senegal,2021,50,Senegal,SEN
+462,Maldives,2021,61,Maldives,MDV
+578,Norway,2021,87,Norway,NOR
+360,Indonesia,2021,55,Indonesia,IDN
+586,Pakistan,2021,45,Pakistan,PAK
+704,Viet Nam,2021,68,Viet Nam,VNM
+728,South Sudan,2021,34,South Sudan,SSD
+784,United Arab Emirates,2021,82,United Arab Emirates,ARE
+484,Mexico,2021,75,Mexico,MEX
+040,Austria,2021,85,Austria,AUT
+376,Israel,2021,85,Israel,ISR
+807,North Macedonia,2021,74,North Macedonia,MKD
+050,Bangladesh,2021,52,Bangladesh,BGD
+170,Colombia,2021,80,Colombia,COL
+300,Greece,2021,77,Greece,GRC
+036,Australia,2021,87,Australia,AUS
+458,Malaysia,2021,76,Malaysia,MYS
+188,Costa Rica,2021,81,Costa Rica,CRI
+616,Poland,2021,82,Poland,POL
+340,Honduras,2021,64,Honduras,HND
+090,Solomon Islands,2021,47,Solomon Islands,SLB
+788,Tunisia,2021,67,Tunisia,TUN
+174,Comoros,2021,48,Comoros,COM
+624,Guinea-Bissau,2021,37,Guinea-Bissau,GNB
+585,Palau,2021,65,Palau,PLW
+662,Saint Lucia,2021,77,Saint Lucia,LCA
+729,Sudan,2021,44,Sudan,SDN
+268,Georgia,2021,68,Georgia,GEO
+064,Bhutan,2021,60,Bhutan,BTN
+795,Turkmenistan,2021,75,Turkmenistan,TKM
+566,Nigeria,2021,38,Nigeria,NGA
+780,Trinidad and Tobago,2021,75,Trinidad and Tobago,TTO
+626,Timor-Leste,2021,52,Timor-Leste,TLS
+670,Saint Vincent and the Grenadines,2021,69,Saint Vincent and the Grenadines,VCT
+454,Malawi,2021,48,Malawi,MWI
+598,Papua New Guinea,2021,30,Papua New Guinea,PNG
+068,Bolivia (Plurinational State of),2021,65,"Bolivia, Plurinational State of",BOL
+028,Antigua and Barbuda,2021,76,Antigua and Barbuda,ATG
+583,Micronesia (Federated States of),2021,48,"Micronesia, Federated States of",FSM
+600,Paraguay,2021,72,Paraguay,PRY
+466,Mali,2021,41,Mali,MLI
+508,Mozambique,2021,44,Mozambique,MOZ
+792,Türkiye,2021,76,Türkiye,TUR
+492,Monaco,2021,86,Monaco,MCO
+296,Kiribati,2021,48,Kiribati,KIR
+070,Bosnia and Herzegovina,2021,66,Bosnia and Herzegovina,BIH
+008,Albania,2021,64,Albania,ALB
+332,Haiti,2021,54,Haiti,HTI
+703,Slovakia,2021,82,Slovakia,SVK
+408,Democratic People's Republic of Korea,2021,68,"Korea, Democratic People's Republic of",PRK
+762,Tajikistan,2021,67,Tajikistan,TJK
+231,Ethiopia,2021,35,Ethiopia,ETH
+124,Canada,2021,91,Canada,CAN
+800,Uganda,2021,49,Uganda,UGA
+554,New Zealand,2021,85,New Zealand,NZL
+504,Morocco,2021,69,Morocco,MAR
+558,Nicaragua,2021,70,Nicaragua,NIC
+710,South Africa,2021,71,South Africa,ZAF
+222,El Salvador,2021,78,El Salvador,SLV
+233,Estonia,2021,79,Estonia,EST
+020,Andorra,2021,79,Andorra,AND
+520,Nauru,2021,60,Nauru,NRU
+620,Portugal,2021,88,Portugal,PRT
+024,Angola,2021,37,Angola,AGO
+678,Sao Tome and Principe,2021,59,Sao Tome and Principe,STP
+051,Armenia,2021,68,Armenia,ARM
+140,Central African Republic,2021,32,Central African Republic,CAF
+276,Germany,2021,88,Germany,DEU
+308,Grenada,2021,70,Grenada,GRD
+380,Italy,2021,84,Italy,ITA
+524,Nepal,2021,54,Nepal,NPL
+232,Eritrea,2021,45,Eritrea,ERI
+372,Ireland,2021,83,Ireland,IRL
+320,Guatemala,2021,59,Guatemala,GTM
+108,Burundi,2021,41,Burundi,BDI
+834,United Republic of Tanzania,2021,43,"Tanzania, United Republic of",TZA
+388,Jamaica,2021,74,Jamaica,JAM
+428,Latvia,2021,75,Latvia,LVA
+646,Rwanda,2021,49,Rwanda,RWA
+608,Philippines,2021,58,Philippines,PHL
+690,Seychelles,2021,75,Seychelles,SYC
+204,Benin,2021,38,Benin,BEN
+270,Gambia,2021,46,Gambia,GMB
+740,Suriname,2021,63,Suriname,SUR
+894,Zambia,2021,56,Zambia,ZMB
+776,Tonga,2021,57,Tonga,TON
+768,Togo,2021,44,Togo,TGO
+218,Ecuador,2021,77,Ecuador,ECU
+348,Hungary,2021,79,Hungary,HUN
+422,Lebanon,2021,73,Lebanon,LBN
+191,Croatia,2021,80,Croatia,HRV
+250,France,2021,85,France,FRA
+192,Cuba,2021,83,Cuba,CUB
+642,Romania,2021,78,Romania,ROU
+246,Finland,2021,86,Finland,FIN
+084,Belize,2021,68,Belize,BLZ
+004,Afghanistan,2021,41,Afghanistan,AFG
+756,Switzerland,2021,86,Switzerland,CHE
+496,Mongolia,2021,65,Mongolia,MNG
+634,Qatar,2021,76,Qatar,QAT
+706,Somalia,2021,27,Somalia,SOM
+643,Russian Federation,2021,79,Russian Federation,RUS
+470,Malta,2021,85,Malta,MLT
+012,Algeria,2021,74,Algeria,DZA
+052,Barbados,2021,77,Barbados,BRB
+562,Niger,2021,35,Niger,NER
+674,San Marino,2021,77,San Marino,SMR
+266,Gabon,2021,49,Gabon,GAB
+116,Cambodia,2021,58,Cambodia,KHM
+048,Bahrain,2021,76,Bahrain,BHR
+076,Brazil,2021,80,Brazil,BRA
+804,Ukraine,2021,76,Ukraine,UKR
+417,Kyrgyzstan,2021,69,Kyrgyzstan,KGZ
+156,China,2021,81,China,CHN
+044,Bahamas,2021,77,Bahamas,BHS
