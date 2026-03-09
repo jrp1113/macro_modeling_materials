@@ -1,0 +1,965 @@
+---
+title: "3-global_implications_models"
+output: html_document
+date: "2024-11-04"
+---
+
+```{r setup, include=FALSE}
+
+
+require(data.table)
+require(ggplot2)
+require(sf)
+library(Hmisc)
+library(haven)
+library(patchwork)
+library(mgcv)
+library(dplyr)
+library(tidyverse)
+library(broom)
+`%!in%` = Negate(`%in%`)
+
+```
+
+
+
+### Load data
+
+```{r}
+
+global_dat<- readRDS(file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat_ready.rds")
+
+
+colnames(global_dat)
+
+global_dat %>% filter(!is.na(POP_CHANGE)) %>% summarise(sum(!is.na(GDP_CHANGE)),
+                                                        sum(!is.na(GDP_CHANGE))/nrow(.),
+                                                        sum(!is.na(POVERTY_CHANGE)),
+                                                        sum(!is.na(POVERTY_CHANGE))/nrow(.),
+                                                        sum(!is.na(HDI_CHANGE_INT_00)),
+                                                        sum(!is.na(HDI_CHANGE_INT_00))/nrow(.),
+                                                          sum(!is.na(median_age_DIFF)),
+                                                         sum(!is.na(median_age_DIFF))/nrow(.),
+                                                        )
+
+```
+
+
+
+```{r}
+
+
+model_vars<- colnames(global_dat %>% select(GDP_CHANGE, HDI_CHANGE_INT_00, 
+                                            POVERTY_CHANGE, median_age_DIFF, median_age_CHANGE))
+
+model_vars
+
+```
+
+### By Econ and Urbanicity 
+
+
+
+Groupings
+
+```{r}
+
+
+
+groupings<- global_dat %>%   
+  group_by(ECONOMY, urban) %>% 
+  summarise(n=n(), 
+           n.countries=length(unique(NAME)), 
+           countries = paste(unique(NAME), collapse = ", "))
+
+
+write_csv(groupings, file = "/home/dmedgyesi/international/model output/summary statistics/grouping_economy_urban.csv")
+
+
+
+groupings_income<- global_dat %>%   
+  arrange(INCOME_GRP, NAME) %>% 
+  group_by(INCOME_GRP) %>% 
+  summarise(n=n(), 
+           n.countries=length(unique(NAME)), 
+           countries = paste(unique(NAME), collapse = ", "))
+
+
+write_csv(groupings_income, file = "/home/dmedgyesi/international/model output/summary statistics/grouping_income.csv")
+
+
+
+
+
+pop_by_group<- global_dat %>% group_by(ECONOMY, urban) %>% 
+  summarise(n(),
+             median=median(POP_CHANGE), 
+              mean=mean(POP_CHANGE),
+             `0.25`=quantile(POP_CHANGE, 0.75),
+            `0.75`=quantile(POP_CHANGE, probs = 0.75, na.rm = TRUE),
+            `0.05`=quantile(POP_CHANGE, probs = 0.05, na.rm = TRUE), 
+            `0.95`=quantile(POP_CHANGE, probs = 0.95, na.rm = TRUE), 
+            min=min(POP_CHANGE, na.rm = T), 
+            max=max(POP_CHANGE, na.rm = T))
+
+
+write_csv(pop_by_group, file = "/home/dmedgyesi/international/model output/summary statistics/population_distr_by_econ_urban.csv")
+
+
+
+global_dat<- global_dat %>% mutate(ECON_URBAN=paste0(ECONOMY, ", ", urban))
+
+
+descriptive_table<- global_dat %>% 
+  group_by(ECONOMY, urban) %>% 
+  summarise(n=n(), 
+            Pop_change=paste0(sprintf("%.2f", median(POP_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(POP_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(POP_CHANGE, 0.75, na.rm =T )), ")"), 
+            GDP_change=paste0(sprintf("%.2f", median(GDP_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(GDP_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(GDP_CHANGE, 0.75, na.rm =T )), ")"), 
+             Median_Age_Diff=paste0(sprintf("%.2f", median(median_age_DIFF, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(median_age_DIFF, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(median_age_DIFF, 0.75, na.rm =T )), ")"), 
+             Poverty_change=paste0(sprintf("%.3f", median(POVERTY_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.3f", quantile(POVERTY_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.3f", quantile(POVERTY_CHANGE, 0.75, na.rm =T )), ")"),
+            HDI_change=paste0(sprintf("%.2f", median(HDI_CHANGE_INT_00, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(HDI_CHANGE_INT_00, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(HDI_CHANGE_INT_00, 0.75, na.rm =T )), ")")) %>% 
+  arrange(ECONOMY, desc(urban))
+
+
+write_csv(descriptive_table, file = "/home/dmedgyesi/international/model output/summary statistics/table1_descriptive.csv")
+
+
+#overall
+
+
+global_dat %>% 
+  summarise(n=n(), 
+            Pop_change=paste0(sprintf("%.2f", median(POP_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(POP_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(POP_CHANGE, 0.75, na.rm =T )), ")"), 
+            GDP_change=paste0(sprintf("%.2f", median(GDP_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(GDP_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(GDP_CHANGE, 0.75, na.rm =T )), ")"), 
+             Median_Age_Diff=paste0(sprintf("%.2f", median(median_age_DIFF, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(median_age_DIFF, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(median_age_DIFF, 0.75, na.rm =T )), ")"), 
+             Poverty_change=paste0(sprintf("%.3f", median(POVERTY_CHANGE, na.rm =T )), " (", 
+                              sprintf("%.3f", quantile(POVERTY_CHANGE, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.3f", quantile(POVERTY_CHANGE, 0.75, na.rm =T )), ")"),
+            HDI_change=paste0(sprintf("%.2f", median(HDI_CHANGE_INT_00, na.rm =T )), " (", 
+                              sprintf("%.2f", quantile(HDI_CHANGE_INT_00, 0.25, na.rm =T )), ", ", 
+                                     sprintf("%.2f", quantile(HDI_CHANGE_INT_00, 0.75, na.rm =T )), ")")) 
+
+```
+
+
+
+#### LINEAR MODELS
+
+
+with random effect
+
+```{r}
+
+variables <- model_vars
+
+# Split dataset by ECONOMY instead of ECON_URBAN
+economy_groups <- split(global_dat, global_dat$ECONOMY)
+
+# Create an empty list to store results (grouped by variable)
+linear_results_list <- list()
+
+# Loop through each dependent variable (store all ECONOMY groups together)
+for (var in variables) {
+  
+  # Create a list to store results for all ECONOMY groups
+  econ_results <- list()
+  
+  # Loop through each ECONOMY class
+  for (economy in names(economy_groups)) {
+    
+    # Subset data
+    data_subset <- economy_groups[[economy]]
+    
+    # Define model formula with urban as an interaction term
+    formula <- as.formula(paste(var, "~ POP_CHANGE * urban"))  
+    
+    # Run mixed-effects model with REGION_WB as a random effect
+    model <- lme(fixed = formula, random = ~ 1 | REGION_WB, 
+                 data = data_subset, method = "REML", na.action = na.exclude, 
+                 control = lmeControl(opt = "optim"))
+    
+    # Extract model summary manually
+    model_summary <- as.data.frame(summary(model)$tTable)  # Extract fixed effects
+    model_summary$term <- rownames(model_summary)  # Store term names
+    colnames(model_summary) <- c("estimate", "std.error", "DF", "t.value", "p.value", "term")
+    
+    # Extract estimates
+    pop_change <- model_summary %>% filter(term == "POP_CHANGE") %>% select(estimate, std.error, p.value)
+    pop_change_urbanT <- model_summary %>% filter(term == "POP_CHANGE:urbanT") %>% select(estimate, std.error, p.value)
+    
+    # Compute the estimate for urban = TRUE
+    urban_estimate <- pop_change$estimate + pop_change_urbanT$estimate
+    urban_se <- sqrt(pop_change$std.error^2 + pop_change_urbanT$std.error^2 + 2 * vcov(model)["POP_CHANGE", "POP_CHANGE:urbanT"])
+    urban_p_value <- pop_change_urbanT$p.value  # Keep interaction term p-value
+    
+    # Compute 95% Confidence Intervals
+    rural_lower <- pop_change$estimate - 1.96 * pop_change$std.error
+    rural_upper <- pop_change$estimate + 1.96 * pop_change$std.error
+    urban_lower <- urban_estimate - 1.96 * urban_se
+    urban_upper <- urban_estimate + 1.96 * urban_se
+    
+    # Combine results into a dataframe
+    model_results <- data.frame(
+      variable = var,
+      ECONOMY = economy,
+      urban = c("F", "T"),
+      estimate = c(pop_change$estimate, urban_estimate),
+      std.error = c(pop_change$std.error, urban_se),
+      p_value = c(pop_change$p.value, urban_p_value),
+      lower = c(rural_lower, urban_lower),
+      upper = c(rural_upper, urban_upper)
+    )
+    
+    model_results<- model_results %>% mutate(ECON_URBAN=paste0(ECONOMY, ", ", urban))
+    
+    # Store the results for this ECONOMY group
+    econ_results[[economy]] <- model_results
+  }
+  
+  # Combine all ECONOMY results for this variable into a single dataframe
+  linear_results_list[[var]] <- bind_rows(econ_results)
+}
+
+# Convert all results into a single dataframe and round all numeric values to 4 decimals
+linear_results_df <- bind_rows(linear_results_list, .id = "variable") %>% 
+  mutate_if(is.numeric, round, 4) %>% select(ECON_URBAN, ECONOMY, urban, variable, everything())
+
+# View the final combined dataframe
+print(linear_results_df)
+
+
+write_csv(linear_results_df, "/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_grid_data_coefficients.csv")
+
+# Display first element of results list
+linear_results_list[[2]]
+
+
+
+
+```
+
+
+
+
+Plot linear coefficient
+
+```{r}
+
+ 
+linear_results_df <- linear_results_df %>%
+        mutate(ECONOMY = factor(ECONOMY, levels = rev(unique(ECONOMY)))) # Reverse order
+ 
+ 
+# Get unique variables
+variables <- unique(linear_results_df$variable)
+
+
+var_label<- c("GDP", "Human Development Index", "Poverty", "Median Age", "Median Age")
+
+var_map <- setNames(var_label, variables)
+
+
+
+# Create an empty list to store plots
+plot_list <- list()
+
+# Loop through each variable
+for (var in variables) {
+  
+  var_label_i <- var_map[var]
+  
+  unit <- if (var == "median_age_DIFF") {
+    "Difference (years)"
+  } else {
+    "Change"
+  }
+  
+  plot <- linear_results_df %>%
+    filter(variable == var) %>%
+    ggplot(aes(x = estimate, y = ECONOMY, color = urban, shape = urban)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") + # Vertical line at zero
+    geom_point(position = position_dodge(width = 0.5), size = 3) + # Point estimates
+    geom_errorbarh(aes(xmin = lower, xmax = upper), 
+                   position = position_dodge(width = 0.5), height = 0.2) + # 95% CI bars
+    theme_minimal() +
+    labs(title = paste("Population Change –", var_label_i, unit),
+         x = paste("Linear coefficient (95% CI)"),
+         y = "",
+         color = "Urban") +
+    theme(legend.position = "bottom",
+          panel.grid.major.y = element_blank(), # Remove horizontal gridlines
+          panel.grid.minor.y = element_blank()) +
+    scale_shape_manual(values = c(16, 17), labels = c("Rural", "Urban"))+  # for shape
+    scale_color_manual(values = c("coral", "turquoise"), labels = c("Rural", "Urban"))+  # for color
+    guides(color = guide_legend(""), shape = guide_legend(""))
+  
+  # Store the plot
+  plot_list[[var]] <- plot
+  
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/coefficient plots/", var, "_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = plot, width = 8, height = 9, dpi = 300)
+}
+
+# Display one of the plots
+print(plot_list)  # Show the first plot
+
+
+
+
+
+```
+
+
+Linear results as a table 
+
+
+```{r}
+
+#create table
+
+#stratification variable must be a factor
+
+global_dat<- global_dat %>% mutate(ECON_URBAN=factor(ECON_URBAN))
+
+group_levels <- unique(global_dat$ECON_URBAN)
+
+
+#create output dataframe 
+# Initialize an empty list to store results for each group
+data_list <- list()
+
+# Loop over each economy group and calculate the sequence of percentiles
+for (group in group_levels) {
+  # Filter data for the current economy group
+  group_data <- global_dat %>% filter(ECON_URBAN == group)
+  
+  # Calculate the 5th and 95th percentiles for population change
+  lower <- -0.5 #quantile(group_data$POP_CHANGE, 0.05, na.rm = TRUE)
+  upper <- 1 #quantile(group_data$POP_CHANGE, 0.95, na.rm = TRUE)
+  
+  # Create a sequence from 5th to 95th percentile with step of 0.01
+  poptot_change_seq <- round(seq(lower, upper, by = 0.01),2)
+  
+  # Create a temporary dataframe for the current group
+  temp_data <- data.frame(ECON_URBAN = group, POP_CHANGE = poptot_change_seq)
+  
+  # Append to the list
+  data_list[[group]] <- temp_data
+}
+
+# Combine all dataframes into one
+new_data <- rbindlist(data_list)
+
+# View the result
+head(new_data)
+
+sep.cats<- global_dat %>% 
+  group_by(ECON_URBAN, ECONOMY, urban) %>% 
+  slice(1) %>% select(ECON_URBAN, ECONOMY, urban) %>% ungroup()
+
+new_data<- new_data %>% left_join(sep.cats, by="ECON_URBAN") %>% 
+  select(ECON_URBAN, ECONOMY,urban, everything())
+
+new_data<- new_data %>% mutate(urban=as.character(urban))
+
+new_data<- new_data %>% arrange(ECON_URBAN, POP_CHANGE)
+
+new_data<- new_data %>% select(-c(ECONOMY, urban))
+
+```
+
+```{r}
+
+
+variables<- names(linear_results_list)
+
+var_label<- c("GDP", "Human Development Index", "Poverty", "Median Age", "Median Age")
+
+var_map <- setNames(var_label, variables)
+
+
+
+# Create an empty list to store plots
+plot_list_continuous <- list()
+
+# Loop through each element in the list (each variable's results)
+for (var in variables) {
+  
+  #set labels
+  var_label_i <- var_map[var]
+  
+  unit <- if (var == "median_age_DIFF") {
+    "Difference (years)"
+  } else {
+    "Change"
+  }
+  
+  unit_y <- if (var == "median_age_DIFF") {
+    "Difference (years)"
+  } else {
+    "Change (%)"
+  }
+  
+  
+  # Merge data with `new_data`
+  linear_table <- new_data %>% left_join(linear_results_list[[var]], by="ECON_URBAN")
+  
+
+   
+  # Compute change estimates
+  linear_table <- linear_table %>%
+    mutate(change = estimate * POP_CHANGE,
+           change_se = std.error * abs(POP_CHANGE),
+           change_lower = change - (1.96 * change_se),
+           change_upper = change + (1.96 * change_se))
+  
+  #convert to percentage except median age difference
+estimates <- c("change","change_lower","change_upper")
+
+ linear_table <- if (var == "median_age_DIFF") {
+    linear_table
+  } else {
+    linear_table %>% 
+  mutate(across(all_of(estimates), 
+                ~ (100*.), 
+                .names = "{.col}"))
+  }
+
+
+  
+  # Generate the plot for this variable
+  plot <- ggplot(data = linear_table) +
+    geom_hline(yintercept = 0, col = "darkgrey", linetype = "dashed") +  
+    geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+    geom_line(aes(x = 100*(POP_CHANGE), y = (change), color = urban)) +
+    geom_ribbon(aes(x = 100*(POP_CHANGE), ymin = (change_lower), ymax = (change_upper), fill = urban), 
+                alpha = 0.5) +
+    theme_minimal() +
+    facet_wrap(~ECONOMY, ncol = 2, scales = "free") + 
+    scale_x_continuous(limits = c(-50, 100)) +
+    labs(title = paste("Population Change –", var_label_i, unit),
+               x = "Population Change (%)",
+               y = paste(var_label_i, unit_y),
+               fill="", 
+               color="") +
+    scale_color_manual(values = c("coral", "turquoise"), labels = c("Rural", "Urban"))+ 
+    scale_fill_manual(values = c("coral", "turquoise"), labels = c("Rural", "Urban"))+ 
+    theme(legend.position = "bottom")
+  
+  # Store plot in list with variable name
+  plot_list_continuous[[var]] <- plot
+   
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/continuous plots/", var, "_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = plot, width = 8, height = 9, dpi = 300)
+  
+}
+
+# Display one of the plots
+print(plot_list_continuous)  # Show first plot
+
+
+ 
+ 
+ 
+
+```
+
+
+For journal
+```{r}
+library(patchwork)
+
+combined <- plot_list[[1]] + plot_list_continuous[[1]]+ plot_layout(widths = c(1, 1.3))
+
+combined
+
+ggsave("/home/dmedgyesi/international/model output/plots/Fig3.png", width = 12, height = 7, dpi = 300)
+
+
+ggsave("/home/dmedgyesi/international/model output/plots/Fig3.eps", width = 12, height = 7)
+
+
+```
+
+
+
+#### GAM MODELS - SPLINES
+
+Prep data
+
+```{r}
+
+
+#stratification variable must be a factor
+
+global_dat<- global_dat %>% mutate(ECON_URBAN=factor(ECON_URBAN))
+
+group_levels <- unique(global_dat$ECON_URBAN)
+
+
+#create output dataframe 
+# Initialize an empty list to store results for each group
+data_list <- list()
+
+# Loop over each economy group and calculate the sequence of percentiles
+for (group in group_levels) {
+  # Filter data for the current economy group
+  group_data <- global_dat %>% filter(ECON_URBAN == group)
+  
+  # Calculate the 5th and 95th percentiles for population change
+  lower <- -1 #quantile(group_data$POP_CHANGE, 0.05, na.rm = TRUE)
+  upper <- 2  #quantile(group_data$POP_CHANGE, 0.95, na.rm = TRUE)
+  
+  # Create a sequence from 5th to 95th percentile with step of 0.01
+  poptot_change_seq <- round(seq(lower, upper, by = 0.01),2)
+  
+  # Create a temporary dataframe for the current group
+  temp_data <- data.frame(ECON_URBAN = group, POP_CHANGE = poptot_change_seq)
+  
+  # Append to the list
+  data_list[[group]] <- temp_data
+}
+
+# Combine all dataframes into one
+new_data <- rbindlist(data_list)
+
+# View the result
+head(new_data)
+
+sep.cats<- global_dat %>% 
+  group_by(ECON_URBAN, ECONOMY, urban) %>% 
+  slice(1) %>% select(ECON_URBAN, ECONOMY, urban) %>% ungroup()
+
+new_data<- new_data %>% left_join(sep.cats, by="ECON_URBAN") %>% 
+  select(ECON_URBAN, ECONOMY,urban, everything())
+
+new_data<- new_data %>% mutate(urban=as.character(urban))
+
+```
+
+Run and export models 
+
+```{r}
+
+
+
+models.str <- list()
+
+for (name in model_vars) {
+  # Fit the model
+  formula_str <- paste(name, " ~ s(POP_CHANGE, bs='cr', k=3, by=ECON_URBAN)", 
+                       sep = "")
+  formula_obj <- as.formula(formula_str)
+  model <- gam(formula_obj, data = global_dat, family = gaussian)
+  
+  # Predict using the model and include standard errors for confidence intervals
+  preds <- predict(model, newdata = new_data, type = "response", se.fit = TRUE)
+  mod_df<- new_data
+  mod_df$predicted <- as.vector(preds$fit)
+  mod_df$se <- as.vector(preds$se.fit)
+  # Calculate 95% confidence intervals
+  ci <- as.vector(1.96 * preds$se.fit)
+  mod_df$upper_pred <- mod_df$predicted + ci
+  mod_df$lower_pred <- mod_df$predicted - ci
+  #Subtract the predicted value at pop_change=0 (i.e., center value)  
+  center.val<- mod_df %>% filter(POP_CHANGE==0) %>% 
+    select(ECON_URBAN, predicted) %>% 
+    rename(center=predicted)
+  mod_df<-mod_df %>% left_join(center.val, by="ECON_URBAN")
+  mod_df<- mod_df %>% mutate(change=predicted-center)
+  mod_df$upper_change <- mod_df$change + ci
+  mod_df$lower_change <- mod_df$change - ci
+  mod_df<- mod_df %>% mutate_if(is.numeric, round, 2)
+  mod_df<- mod_df %>% mutate(var.type=name) %>% select(var.type, everything())
+  models.str[[name]] <- mod_df
+  
+  file_name <- paste0("/home/dmedgyesi/international/model output/", 
+                      name,"_BY_ECON_URBAN", ".csv")
+  write_csv(mod_df, file_name)
+
+}
+
+
+look<- models.str[[1]]
+
+```
+
+
+Plot results
+
+```{r}
+
+plots.str <- list()
+
+for (name in names(models.str)) {
+     suppressWarnings({
+  #pick a reasonable y limits 
+    dat_limits<- models.str[[name]]  
+    y_low <- quantile(dat_limits$lower_change, 0.02,na.rm = TRUE)
+    y_high <- quantile(dat_limits$upper_change, 0.98,na.rm = TRUE)
+    avg_change_per_group <- dat_limits %>%
+            group_by(ECONOMY, urban) %>%
+            summarise(avg_change = median(change, na.rm = TRUE)) %>% ungroup()
+               
+     
+  
+    p <- ggplot(data = models.str[[name]]) +
+          geom_hline(yintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_line(aes(x = POP_CHANGE, y = change, color=urban)) +
+          geom_ribbon(aes(x = POP_CHANGE, ymin = lower_change, ymax = upper_change, fill=urban), 
+                alpha = 0.5) +
+    theme_minimal() +
+    facet_wrap(~ECONOMY, ncol=2, scales = "free") +
+    scale_x_continuous(limits = c(-1, 2)) +
+    #scale_y_continuous(limits = c(y_low, y_high))  +
+    labs(title = paste(name)) 
+    
+  plots.str[[name]] <-p  
+  print(plots.str[[name]])
+  
+  # Save the plot
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/", name, "_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+     })
+}
+
+
+
+```
+
+
+
+
+
+### By Economy 
+
+Groupings
+
+```{r}
+
+
+groupings<- global_dat %>%   
+  group_by(ECONOMY) %>% 
+  summarise(n=n(), 
+           n.countries=length(unique(NAME)), 
+           countries = paste(unique(NAME), collapse = ", "))
+
+
+write_csv(groupings, file = "/home/dmedgyesi/international/output/grouping_economy.csv")
+
+
+pop_by_group<- global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(),
+            `0.05`=quantile(POP_CHANGE, probs = 0.05, na.rm = TRUE), 
+            `0.95`=quantile(POP_CHANGE, probs = 0.95, na.rm = TRUE), 
+            min=min(POP_CHANGE, na.rm = T), 
+            max=max(POP_CHANGE, na.rm = T), 
+            median=median(POP_CHANGE), 
+            `0.25`=quantile(POP_CHANGE, 0.25))
+
+
+
+
+
+```
+
+
+
+
+Prep data
+
+```{r}
+
+
+#stratification variable must be a factor
+
+global_dat<- global_dat %>% mutate(ECONOMY=factor(ECONOMY))
+
+group_levels <- unique(global_dat$ECONOMY)
+
+
+#create output dataframe 
+# Initialize an empty list to store results for each group
+data_list <- list()
+
+# Loop over each economy group and calculate the sequence of percentiles
+for (group in group_levels) {
+  # Filter data for the current economy group
+  group_data <- global_dat %>% filter(ECONOMY == group)
+  
+  # Calculate the 5th and 95th percentiles for population change
+  lower <- quantile(group_data$POP_CHANGE, 0.05, na.rm = TRUE)
+  upper <- quantile(group_data$POP_CHANGE, 0.95, na.rm = TRUE)
+  
+  # Create a sequence from 5th to 95th percentile with step of 0.01
+  poptot_change_seq <- round(seq(lower, upper, by = 0.01),2)
+  
+  # Create a temporary dataframe for the current group
+  temp_data <- data.frame(ECONOMY = group, POP_CHANGE = poptot_change_seq)
+  
+  # Append to the list
+  data_list[[group]] <- temp_data
+}
+
+# Combine all dataframes into one
+new_data <- rbindlist(data_list)
+
+# View the result
+head(new_data)
+
+
+
+
+
+
+```
+
+Run and export models 
+
+```{r}
+
+models.str <- list()
+
+for (name in model_vars) {
+  # Fit the model
+  formula_str <- paste(name, " ~ s(POP_CHANGE, bs='cr', k=3, by=ECONOMY)", 
+                       sep = "")
+  formula_obj <- as.formula(formula_str)
+  model <- gam(formula_obj, data = global_dat, family = gaussian)
+  
+  # Predict using the model and include standard errors for confidence intervals
+  preds <- predict(model, newdata = new_data, type = "response", se.fit = TRUE)
+  mod_df<- new_data
+  mod_df$predicted <- as.vector(preds$fit)
+  mod_df$se <- as.vector(preds$se.fit)
+  # Calculate 95% confidence intervals
+  ci <- as.vector(1.96 * preds$se.fit)
+  mod_df$upper_pred <- mod_df$predicted + ci
+  mod_df$lower_pred <- mod_df$predicted - ci
+  #Subtract the predicted value at pop_change=0 (i.e., center value)  
+  center.val<- mod_df %>% filter(POP_CHANGE==0) %>% 
+    select(ECONOMY, predicted) %>% 
+    rename(center=predicted)
+  mod_df<-mod_df %>% left_join(center.val, by="ECONOMY")
+  mod_df<- mod_df %>% mutate(change=predicted-center)
+  mod_df$upper_change <- mod_df$change + ci
+  mod_df$lower_change <- mod_df$change - ci
+  mod_df<- mod_df %>% mutate_if(is.numeric, round, 2)
+  mod_df<- mod_df %>% mutate(var.type=name) %>% select(var.type, everything())
+  models.str[[name]] <- mod_df
+  
+  file_name <- paste0("/home/dmedgyesi/international/model output/", 
+                      name,"_BY_ECONOMY", ".csv")
+  write_csv(mod_df, file_name)
+
+}
+
+
+```
+
+
+Plot results
+
+```{r}
+
+plots.str <- list()
+
+for (name in names(models.str)) {
+     suppressWarnings({
+  #pick a reasonable y limits 
+    dat_limits<- models.str[[name]]  
+    y_low <- quantile(dat_limits$lower_change, 0.02,na.rm = TRUE)
+    y_high <- quantile(dat_limits$upper_change, 0.98,na.rm = TRUE)
+    
+  
+    p <- ggplot(data = models.str[[name]]) +
+          geom_hline(aes(yintercept = 0), 
+                       col = "darkgrey", 
+                       linetype = "dashed") +
+      geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+    geom_line(aes(x = POP_CHANGE, y = change, color=ECONOMY)) +
+    geom_ribbon(aes(x = POP_CHANGE, ymin = lower_change, ymax = upper_change, fill=ECONOMY), 
+                alpha = 0.5) +
+    theme_minimal() +
+    theme(legend.position = "none")+
+    facet_wrap(~ECONOMY, ncol=2) +
+    scale_x_continuous(limits = c(-0.6, 2)) +
+    scale_y_continuous(limits = c(y_low, y_high))  +
+    labs(title = paste(name)) 
+    
+  plots.str[[name]] <-p  
+  print(plots.str[[name]])
+  
+  # Save the plot
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/", name, "_BY_ECONOMY", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+     })
+}
+
+
+
+```
+
+
+#### EXTRA 
+
+
+linear no random effect
+```{r}
+global_dat<- global_dat %>% mutate(INCOME_URBAN=paste0(INCOME_GRP, ", ", urban))
+
+# Split dataset by ECONOMY class
+economy_groups <- c(split(global_dat, global_dat$INCOME_URBAN))
+
+
+# Create an empty list to store results by variable
+linear_results_list <- list()
+
+# Loop through each dependent variable (model_vars)
+for (var in model_vars) {
+  
+  # Create an empty list to store results for each economy
+  economy_results <- list()
+  
+  # Loop through each ECONOMY class
+  for (economy in names(economy_groups)) {
+    
+    data_subset <- economy_groups[[economy]]
+    
+    # Run linear model
+    formula <- as.formula(paste(var, "~ POP_CHANGE + ISO_A3"))
+    model <- lm(formula, data = data_subset)
+    
+    # Extract model summary using broom and exclude intercept
+    model_summary <- tidy(model) %>% 
+      filter(term == "POP_CHANGE") %>%
+      mutate(
+        lower = estimate - 1.96 * std.error,  # 95% CI lower bound
+        upper = estimate + 1.96 * std.error,  # 95% CI upper bound
+        variable = var,  # Store the variable name
+        INCOME_URBAN = economy  # Store the economy name
+      ) %>%
+      select(variable, INCOME_URBAN, estimate, std.error, p.value, lower, upper)  # Keep generic column names
+    
+    
+    
+    # Store results for this economy
+    economy_results[[economy]] <- model_summary
+  }
+  
+  # Combine all economy results for this variable into a single dataframe
+  linear_results_list[[var]] <- bind_rows(economy_results)
+}
+
+
+# If you want to combine everything into a single dataframe:
+linear_results_df <- bind_rows(linear_results_list, .id = "variable")
+
+linear_results_df <- linear_results_df %>% 
+  mutate_if(is.numeric, round, 4)
+
+
+
+```
+
+linear urban interactive term
+
+```{r}
+
+
+# Split dataset by ECONOMY instead of ECON_URBAN
+economy_groups <- split(global_dat, global_dat$ECONOMY)
+
+# Create an empty list to store results by variable
+linear_results_list <- list()
+
+# Loop through each dependent variable (model_vars)
+for (var in model_vars) {
+  
+  # Create an empty list to store results for each economy
+  economy_results <- list()
+  
+  # Loop through each ECONOMY class
+  for (economy in names(economy_groups)) {
+    
+    data_subset <- economy_groups[[economy]]
+    
+    # Define model formula with urban as an interaction term
+    formula <- as.formula(paste(var, "~ POP_CHANGE * urban"))  
+    model <- lm(formula, data = data_subset)
+    
+    # Extract model summary using broom
+    model_summary <- tidy(model)
+    
+    # Extract estimates for rural and urban effects
+    pop_change <- model_summary %>% filter(term == "POP_CHANGE") %>% select(estimate, std.error, p.value)
+    pop_change_urbanT <- model_summary %>% filter(term == "POP_CHANGE:urbanT") %>% select(estimate, std.error, p.value)
+    
+    # Compute the estimate for urban = TRUE
+    urban_estimate <- pop_change$estimate + pop_change_urbanT$estimate
+    
+    # Compute the correct standard error for urban
+    cov_matrix <- vcov(model)
+    urban_se <- sqrt(pop_change$std.error^2 + pop_change_urbanT$std.error^2 + 2 * cov_matrix["POP_CHANGE", "POP_CHANGE:urbanT"])
+    urban_p_value <- pop_change_urbanT$p.value  # Keep interaction term p-value
+    
+    # Compute 95% Confidence Intervals
+    rural_lower <- pop_change$estimate - 1.96 * pop_change$std.error
+    rural_upper <- pop_change$estimate + 1.96 * pop_change$std.error
+    urban_lower <- urban_estimate - 1.96 * urban_se
+    urban_upper <- urban_estimate + 1.96 * urban_se
+    
+    # Combine results into a dataframe
+    model_results <- data.frame(
+      variable = var,
+      ECONOMY = economy,
+      urban = c("F", "T"),
+      estimate = c(pop_change$estimate, urban_estimate),
+      std.error = c(pop_change$std.error, urban_se),
+      p_value = c(pop_change$p.value, urban_p_value),
+      lower = c(rural_lower, urban_lower),
+      upper = c(rural_upper, urban_upper)
+    )
+    
+    # Create a combined column for ECONOMY and urban category
+    model_results <- model_results %>% mutate(ECON_URBAN = paste0(ECONOMY, ", ", urban))
+    
+    # Store the results for this ECONOMY group
+    economy_results[[economy]] <- model_results
+  }
+  
+  # Combine all ECONOMY results for this variable into a single dataframe
+  linear_results_list[[var]] <- bind_rows(economy_results)
+}
+
+# Convert all results into a single dataframe and round all numeric values to 4 decimals
+linear_results_df <- bind_rows(linear_results_list, .id = "variable") %>% 
+  mutate_if(is.numeric, round, 4)
+
+# View the final combined dataframe
+print(linear_results_df)
+
+# Display first element of results list
+linear_results_list[[1]]
+
+
+
+```
+

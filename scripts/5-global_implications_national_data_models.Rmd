@@ -1,0 +1,1071 @@
+---
+title: "Pop change and MEV linear"
+output: html_document
+date: "2025-02-18"
+---
+
+```{r setup, include=FALSE}
+
+library(data.table)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(haven)
+library(mgcv)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(nlme)
+library(fastDummies)
+
+options(scipen = 999)
+
+`%!in%` = Negate(`%in%`)
+
+
+```
+
+
+### GDP - MEV models country resolution ANNUAL CHANGE
+
+
+```{r}
+
+gdp_country<- readRDS("/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_country_data_yearly_long.rds")
+
+look <- gdp_country %>% select(ISO_A3, NAME, ECONOMY, gdp_change, income_change, dti, dti_lag)
+
+#create percentage difference for variables expressed as a percentage, and convert to proportion
+gdp_country<- gdp_country %>% mutate(unemploy_diff=(unemploy-unemploy_lag)/100, 
+                                     dti_diff=(dti-dti_lag)/100, 
+                                     credit_diff=(credit-credit_lag)/100)
+
+
+```
+
+
+
+Describe data
+
+```{r}
+
+# Define the variables of interest
+variables <- c("gdp_change","gdp_capita_change","rppi_change", "dti_diff", "credit_diff",
+               "unemploy_diff", "income_change", "cppi_change", "PLI_change", "foreign_born_diff")
+
+# Assuming the dataset is named df and contains 'ISO' and 'year' columns
+results <- lapply(variables, function(var) {
+  df_filtered <- gdp_country %>% filter(!is.na(.data[[var]])) # Filter out NA values for the variable
+  
+  tibble(
+    variable = var,
+    unique_ISO_count = n_distinct(df_filtered$ISO_A3),  # Count unique ISO codes
+    min_year = min(df_filtered$year, na.rm = TRUE),  # Find min year
+    max_year = max(df_filtered$year, na.rm = TRUE)   # Find max year
+  )
+}) %>%
+  bind_rows()
+
+# Display the results
+print(results)
+
+#gdp_country <- gdp_country %>%
+#  mutate(across(all_of(variables), ~ .x * 100))
+
+
+```
+
+
+
+#### GDP
+
+By economy classes
+
+```{r}
+
+# Define dependent variables for models
+variables <- c( "gdp_capita_change", "income_change","unemploy_diff", "dti_diff", "PLI_change")
+
+# Split dataset by ECONOMY class
+economy_groups <- split(gdp_country, gdp_country$ECONOMY)
+
+# Create an empty list to store results
+results_list <- list()
+
+
+
+for (economy in names(economy_groups)) {
+  
+  for (var in variables) {
+    
+    # Reset the data subset each time
+    data_subset <- economy_groups[[economy]]
+    
+    # If PLI_change, adjust the GDP variable
+    if (var == "PLI_change") {
+      data_subset <- data_subset %>% select(-gdp_change) %>% rename(gdp_change = gdp_change_PLI)
+    }
+
+
+  
+    
+    # Create the formula
+    if (var %in% c("PLI_change")) {
+      formula <- as.formula(paste0(var, "~ gdp_change"))
+    } 
+    
+    
+    else {
+      formula <- as.formula(paste0(var, "~ gdp_change + year"))
+    }
+    
+    # Run the model
+    model <- lme(
+      fixed = formula, 
+      random = ~ 1 | ISO_A3, 
+      data = data_subset, 
+      method = "REML", 
+      na.action = na.exclude, 
+      control = lmeControl(opt = "optim")
+    )
+    
+    # Extract and process results
+    model_summary <- as.data.frame(summary(model)$tTable)
+    model_summary$term <- rownames(model_summary)
+    colnames(model_summary) <- c("estimate", "std.error", "DF", "t.value", "p.value", "term")
+    
+    model_summary <- model_summary %>%
+      filter(term == "gdp_change") %>%
+      mutate(
+        lower = estimate - 1.96 * std.error,
+        upper = estimate + 1.96 * std.error
+      )
+    
+    model_results <- model_summary %>%
+      mutate(variable = var, Economy = economy) %>%
+      select(Economy, variable, everything(), -term)
+    
+    rownames(model_results) <- NULL
+    results_list[[paste(economy, var, sep = "_")]] <- model_results
+  }
+}
+
+# Combine all results into a single dataframe and round all numeric values to 4 decimals
+country_gdp_results <- bind_rows(results_list) %>% 
+  mutate_if(is.numeric, round, 4)
+
+
+write_csv(country_gdp_results, "/home/dmedgyesi/international/national gdp - mev output/coefficient tables/gdp_mev_national_7economy.csv")
+
+
+
+
+
+```
+
+
+```{r}
+
+# Get unique dependent variables
+variables
+
+var_label<- c("GDP per capita", "Income", "Unemployment", "Debt-to-Income","Price Living Index")
+
+var_map <- setNames(var_label, variables)
+
+
+
+# Print forest plots for each dependent variable
+for (var in variables) {
+  
+  plot_data <- country_gdp_results %>% filter(variable == var)
+  plot_data <- plot_data %>%
+    mutate(Economy = factor(Economy, levels = rev(unique(Economy))))
+  
+  var_label_i <- var_map[var]
+  
+  p <- ggplot(plot_data, aes(x = estimate, y = (Economy))) +
+    geom_point(color = "blue", size = 3) +  # Points for coefficient estimates
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2, color = "black") +  # CI bars
+    geom_vline(xintercept = 0, linetype = "dashed") +  # Reference line at 0
+    theme_minimal() +
+    labs(title =  paste("GDP Change –", var_label_i, "Change (national-level)"),
+         x = "Linear coefficient (95% CI)",
+         y = "") +
+    theme(axis.text.y = element_text(size = 10),
+          axis.text.x = element_text(size = 10),
+          plot.title = element_text(hjust=0, size = 12, face = "bold"))
+  
+  file_name <- paste0("/home/dmedgyesi/international/national gdp - mev output/forest plots/", var, "_7ECON", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 5, dpi = 300)
+  # Print the plot instead of saving
+  print(p)
+}
+
+
+
+
+
+
+```
+
+
+By collapsed economy
+
+```{r}
+
+# Define dependent variables for models
+variables <- c( "gdp_capita_change", "rppi_change", "cppi_change", "dti_diff",
+               "unemploy_diff", "income_change", "PLI_change")
+
+# Split dataset by ECONOMY class
+economy_groups <- c(split(gdp_country, gdp_country$ECONOMY_COLLAPSE))
+# list("All" = gdp_country)
+
+# Create an empty list to store results
+results_list <- list()
+
+# Loop through each ECONOMY class
+for (economy in names(economy_groups)) {
+
+    for (var in variables) {
+  
+      data_subset <- economy_groups[[economy]] 
+    
+     # If PLI_change, adjust the GDP variable
+    if (var == "PLI_change") {
+      data_subset <- data_subset %>% select(-gdp_change) %>% rename(gdp_change = gdp_change_PLI)
+    }
+      
+    
+    # Construct formula dynamically: Exclude `year` if var == "PLI_change"
+    if (var =="PLI_change") {
+      formula <- as.formula(paste(var, "~ gdp_change"))
+    } 
+       else if (economy == "All") {
+      formula <- as.formula(paste(var, "~ gdp_change + year + ECONOMY_COLLAPSE"))
+    } 
+     else {
+      formula <- as.formula(paste(var, "~ gdp_change + year  "))
+    }
+    
+    # Run mixed-effects model with ISO_A3 as a random effect
+    model <- lme(fixed = formula, random = ~ 1 | ISO_A3, 
+                 data = data_subset, method = "REML", na.action = na.exclude, control = lmeControl(opt="optim"))
+    
+    # Extract model summary manually
+    model_summary <- as.data.frame(summary(model)$tTable)  # Extract fixed effects
+    model_summary$term <- rownames(model_summary)  # Store term names
+    colnames(model_summary) <- c("estimate", "std.error", "DF", "t.value", "p.value", "term")
+    
+    # Filter to only gdp_change term
+    model_summary <- model_summary %>%
+      filter(term == "gdp_change") %>%
+      mutate(lower = estimate - 1.96 * std.error,  # 95% CI lower bound
+             upper = estimate + 1.96 * std.error)  # 95% CI upper bound
+    
+    # Combine results into a dataframe
+    model_results <- model_summary %>%
+      mutate(variable = var, 
+             Economy = economy)
+    
+    model_results<- model_results %>% select(Economy, variable, everything())%>% select(-term)
+    
+    rownames(model_results) <- NULL
+
+    
+    # Append results to the list
+    results_list[[paste(economy, var, sep = "_")]] <- model_results
+  }
+}
+
+# Combine all results into a single dataframe and round all numeric values to 4 decimals
+country_gdp_results_econ_collapse <- bind_rows(results_list) %>% 
+  mutate_if(is.numeric, round, 4)
+
+
+
+
+write_csv(country_gdp_results_econ_collapse, "/home/dmedgyesi/international/national gdp - mev output/coefficient tables/gdp_mev_national_3economy.csv")
+
+```
+
+
+
+```{r}
+
+
+
+# Get unique dependent variables
+variables
+
+var_label<- c( "GDP per capita","Residential Property Price", "Commercial Property Price","Debt-to-Income","Unemployment","Income",   "Price Living Index")
+
+var_map <- setNames(var_label, variables)
+
+
+
+# Print forest plots for each dependent variable
+for (var in variables) {
+  
+  plot_data <- country_gdp_results_econ_collapse %>% filter(variable == var)
+  plot_data <- plot_data %>%
+    mutate(Economy = factor(Economy, levels = rev(unique(Economy))))
+  
+  var_label_i <- var_map[var]
+  
+  p <- ggplot(plot_data, aes(x = estimate, y = (Economy))) +
+    geom_point(color = "blue", size = 3) +  # Points for coefficient estimates
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2, color = "black") +  # CI bars
+    geom_vline(xintercept = 0, linetype = "dashed") +  # Reference line at 0
+    theme_minimal() +
+    labs(title = paste("GDP Change –", var_label_i, "Change (national-level)"),
+         x = "Linear coefficient (95% CI)",
+         y = "") +
+    theme(axis.text.y = element_text(size = 10),
+          axis.text.x = element_text(size = 10),
+          plot.title = element_text(hjust=0.5, size = 12, face = "bold"))
+  
+  file_name <- paste0("/home/dmedgyesi/international/national gdp - mev output/forest plots/", var, "_3ECON", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 5, dpi = 300)
+  # Print the plot instead of saving
+  print(p)
+}
+
+
+
+
+
+
+
+```
+
+### POP- Nativity 
+
+```{r}
+
+
+
+# Define dependent variables for models
+variables <- c( "foreign_born_diff")
+
+# Split dataset by ECONOMY class
+
+
+economy_groups <- split(gdp_country, gdp_country$ECONOMY_COLLAPSE)
+
+# Create an empty list to store results
+results_list <- list()
+
+
+
+for (economy in names(economy_groups)) {
+  
+  for (var in variables) {
+    
+    # Reset the data subset each time
+    data_subset <- economy_groups[[economy]]
+    
+      formula <- as.formula(paste0(var, "~ pop_change_foreign_born + year "))
+  
+    
+    # Run the model
+    model <- lme(
+      fixed = formula, 
+      random = ~ 1 | ISO_A3, 
+      data = data_subset, 
+      method = "REML", 
+      na.action = na.exclude, 
+      control = lmeControl(opt = "optim")
+    )
+    
+    # Extract and process results
+    model_summary <- as.data.frame(summary(model)$tTable)
+    model_summary$term <- rownames(model_summary)
+    colnames(model_summary) <- c("estimate", "std.error", "DF", "t.value", "p.value", "term")
+    
+    model_summary <- model_summary %>%
+      filter(term == "pop_change_foreign_born") %>%
+      mutate(
+        lower = estimate - 1.96 * std.error,
+        upper = estimate + 1.96 * std.error
+      )
+    
+    model_results <- model_summary %>%
+      mutate(variable = var, Economy = economy) %>%
+      select(Economy, variable, everything(), -term)
+    
+    rownames(model_results) <- NULL
+    results_list[[paste(economy, var, sep = "_")]] <- model_results
+  }
+}
+
+# Combine all results into a single dataframe and round all numeric values to 4 decimals
+country_nativity_results <- bind_rows(results_list) %>% 
+  mutate_if(is.numeric, round, 4)
+
+
+
+
+```
+
+```{r}
+# Get unique dependent variables
+variables
+
+var_label<- c("Foreign-born")
+
+var_map <- setNames(var_label, variables)
+
+
+
+# Print forest plots for each dependent variable
+for (var in variables) {
+  
+  plot_data <- country_nativity_results %>% filter(variable == var) 
+  plot_data <- plot_data %>%
+    mutate(Economy = factor(Economy, levels = rev(unique(Economy))))
+  
+  var_label_i <- var_map[var]
+  
+  p <- ggplot(plot_data, aes(x = estimate, y = (Economy))) +
+    geom_point(color = "blue", size = 3) +  # Points for coefficient estimates
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2, color = "black") +  # CI bars
+    geom_vline(xintercept = 0, linetype = "dashed") +  # Reference line at 0
+    theme_minimal() +
+    labs(title = paste("Population Change –", var_label_i, "Change (national-level)"),
+         x = "Linear coefficient (95% CI)",
+         y = "") +
+    theme(axis.text.y = element_text(size = 10),
+          axis.text.x = element_text(size = 10),
+          plot.title = element_text(hjust=0.5, size = 12, face = "bold"))
+  
+ # file_name <- paste0("/home/dmedgyesi/international/national gdp - mev output/forest plots/", var, "_3ECON", "_plot.png")  
+#  ggsave(file_name, plot = p, width = 8, height = 5, dpi = 300)
+  # Print the plot instead of saving
+  print(p)
+}
+
+
+
+```
+
+Disaggregate to urban and rural 
+
+```{r}
+
+urban_contrib<- 0.78
+rural_contrib<- 0.228
+urban_rural_effect_ratio<- 1.6
+
+
+country_nativity_results<- country_nativity_results %>% 
+  mutate(coef_rural=estimate/(rural_contrib+urban_contrib*urban_rural_effect_ratio), 
+         se_rural=std.error/(rural_contrib+urban_contrib*urban_rural_effect_ratio)) %>% 
+  mutate(coef_urban=coef_rural*urban_rural_effect_ratio, 
+         se_urban=se_rural*urban_rural_effect_ratio)
+
+
+all_levels<- gdp_country %>% select(ECONOMY, ECONOMY_COLLAPSE) %>% group_by(ECONOMY) %>% slice(1) %>% ungroup()
+
+
+urban_all_levels<- all_levels %>% mutate(urban=TRUE) %>% 
+  left_join(country_nativity_results, by=c("ECONOMY_COLLAPSE"="Economy")) %>% 
+  select(ECONOMY, urban, coef_urban, se_urban) %>% rename(coef=coef_urban, std.error=se_urban)
+
+rural_all_levels<- all_levels %>% mutate(urban=FALSE)%>% 
+  left_join(country_nativity_results, by=c("ECONOMY_COLLAPSE"="Economy")) %>% 
+  select(ECONOMY, urban, coef_rural, se_rural) %>% rename(coef=coef_rural, std.error=se_rural)
+
+
+pop_nativity_final<- rbind(urban_all_levels, rural_all_levels) %>% 
+  mutate(ECON_URBAN=paste0(ECONOMY, ", ", str_sub(urban, 1,1))) %>% mutate(variable="FOREIGN_BORN_DIFF") %>% 
+  select(ECON_URBAN, ECONOMY, urban, variable, coef, std.error) 
+
+
+```
+
+
+### POP - MEV estimate through effects on GDP 
+
+
+```{r}
+
+pop_gdp_results<- read_csv("/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_grid_data_coefficients.csv")
+
+pop_gdp_results<- pop_gdp_results %>% filter(variable=="GDP_CHANGE") %>% 
+  select(ECON_URBAN:urban, estimate, std.error) %>% 
+  rename(pop_gdp_estimate=estimate,pop_gdp_std.error=std.error)
+
+```
+
+
+
+All economy classes
+
+```{r}
+
+
+country_gdp_results_clean<- country_gdp_results %>% 
+  select(Economy, variable, estimate, std.error) %>% 
+  mutate(estimate=estimate, 
+         std.error=std.error)
+
+pop_mev_results<- inner_join(pop_gdp_results, country_gdp_results_clean, by=c("ECONOMY"="Economy"))
+
+
+
+pop_mev_results<- pop_mev_results %>% 
+   mutate(
+      pop_mev_coef = (pop_gdp_estimate * estimate), 
+      pop_mev_std_error = ((sqrt((estimate^2 * pop_gdp_std.error^2) + 
+                           (pop_gdp_estimate^2 * std.error^2)))),
+      pop_mev_lower = pop_mev_coef - 1.96 * pop_mev_std_error,
+      pop_mev_upper = pop_mev_coef + 1.96 * pop_mev_std_error
+    )
+
+
+```
+
+Linear plot 
+
+```{r}
+
+
+# Get unique dependent variables
+vars <- unique(pop_mev_results$variable)
+
+var_label<- c("GDP per capita", "Income", "Unemployment", "Debt-to-Income", "Price Living Index")
+
+var_map <- setNames(var_label, vars)
+
+
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each dependent variable and generate a plot
+for (var in vars) {
+  
+  # Subset data for the specific dependent variable
+  plot_data <- pop_mev_results %>%
+    filter(variable == var) %>% 
+    mutate(ECONOMY=factor(ECONOMY, levels = rev(unique(ECONOMY))))
+  
+  var_label_i <- var_map[var]
+
+
+  # Generate the forest plot
+  p <- ggplot(plot_data, aes(x = pop_mev_coef, y = ECONOMY, color = urban, shape = urban)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +  # Vertical reference line at 0
+    geom_point(position = position_dodge(width = 0.5), size = 3) +  # Point estimates
+    geom_errorbarh(aes(xmin = pop_mev_lower, xmax = pop_mev_upper), 
+                   position = position_dodge(width = 0.5), height = 0.2) +  # Confidence intervals
+    theme_minimal() +
+    labs(title = paste("Population Change –", var_label_i, "Change"),
+         x = paste("Linear coefficient (95% CI)"),
+         y = "",
+         color = "Urban") +
+    theme(legend.position = "bottom",
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    guides(color = guide_legend("Urban"), shape = guide_legend("Urban"))
+  
+  
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/coefficient plots/", var, "_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+  
+  # Store the plot in the list
+  plots[[var]] <- p
+  
+
+}
+
+# Display all plots
+plots
+
+
+```
+
+Nativity plot
+
+```{r}
+
+pop_nativity_plot<- pop_nativity_final %>% 
+  mutate(lower=coef-1.96*std.error, upper=coef+1.96*std.error) %>% 
+  mutate(ECONOMY=factor(ECONOMY)) %>% mutate(ECONOMY=factor(ECONOMY, levels = rev(levels(ECONOMY))))
+
+
+p<- ggplot(pop_nativity_plot, aes(x = coef, y = ECONOMY, color = urban, shape = urban)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +  # Vertical reference line at 0
+    geom_point(position = position_dodge(width = 0.5), size = 3) +  # Point estimates
+    geom_errorbarh(aes(xmin = lower, xmax = upper), 
+                   position = position_dodge(width = 0.5), height = 0.2) +  # Confidence intervals
+    theme_minimal() +
+    labs(title = paste("Population Change – Foreign-Born Change"),
+         x = paste("Linear coefficient (95% CI)"),
+         y = "",
+         color = "Urban") +
+    theme(legend.position = "bottom",
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    guides(color = guide_legend("Urban"), shape = guide_legend("Urban"))
+  
+
+
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/coefficient plots/", "foreign_born_diff_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+  
+
+```
+
+Table 
+
+
+```{r}
+
+#create table
+
+#stratification variable must be a factor
+
+pop_gdp_results<- pop_gdp_results %>% mutate(ECON_URBAN=factor(ECON_URBAN))
+
+group_levels <- unique(pop_gdp_results$ECON_URBAN)
+
+
+#create output dataframe 
+# Initialize an empty list to store results for each group
+data_list <- list()
+
+# Loop over each economy group and calculate the sequence of percentiles
+for (group in group_levels) {
+  # Filter data for the current economy group
+  group_data <- pop_gdp_results %>% filter(ECON_URBAN == group)
+  
+  # Calculate the 5th and 95th percentiles for population change
+  lower <- -0.5 #quantile(group_data$POP_CHANGE, 0.05, na.rm = TRUE)
+  upper <- 1  #quantile(group_data$POP_CHANGE, 0.95, na.rm = TRUE)
+  
+  # Create a sequence from 5th to 95th percentile with step of 0.01
+  poptot_change_seq <- round(seq(lower, upper, by = 0.01),2)
+  
+  # Create a temporary dataframe for the current group
+  temp_data <- data.frame(ECON_URBAN = group, POP_CHANGE = poptot_change_seq)
+  
+  # Append to the list
+  data_list[[group]] <- temp_data
+}
+
+# Combine all dataframes into one
+new_data <- rbindlist(data_list)
+
+# View the result
+head(new_data)
+
+sep.cats<- pop_gdp_results %>% 
+  select(ECON_URBAN, ECONOMY, urban) %>% ungroup()
+
+new_data<- new_data %>% left_join(sep.cats, by="ECON_URBAN") %>% 
+  select(ECON_URBAN, ECONOMY,urban, everything())
+
+
+new_data<- new_data %>% arrange(ECON_URBAN, POP_CHANGE)
+
+
+```
+
+
+
+```{r}
+
+
+pop_mev_results_select<- pop_mev_results %>% 
+  select(ECON_URBAN, variable, pop_mev_coef, pop_mev_std_error) 
+
+
+# Get unique dependent variables
+vars <- unique(pop_mev_results_select$variable)
+
+# Create an empty list to store data frames
+pop_mev_tables <- list()
+
+# Loop through each dependent variable
+for (var in vars) {
+  
+  # Filter data for the current dependent variable
+  pop_mev_results_filter <- pop_mev_results_select %>%
+    filter(variable == var)
+  
+  # Join with new_data
+  pop_mev_table <- new_data %>% 
+    left_join(pop_mev_results_filter, by = "ECON_URBAN") %>%
+    mutate(
+      mev_change = pop_mev_coef * POP_CHANGE, 
+      mev_change_se = pop_mev_std_error * abs(POP_CHANGE),
+      mev_change_lower = mev_change - (1.96 * mev_change_se),
+      mev_change_upper = mev_change + (1.96 * mev_change_se)
+    )
+  
+  # Store dataframe in list with the dependent variable as the key
+  pop_mev_tables[[var]] <- pop_mev_table
+}
+
+
+
+
+```
+
+
+```{r}
+
+
+# Get unique dependent variables
+vars <- names(pop_mev_tables)
+
+var_label<- c("GDP per capita", "Income", "Unemployment", "Debt-to-Income", "Price Living Index")
+
+var_map <- setNames(var_label, vars)
+
+
+
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each processed dataset (PLOTTING ONLY)
+for (var in vars) {
+  
+  # Extract the processed dataframe
+  plot_data <- pop_mev_tables[[var]]
+  
+  var_label_i <- var_map[var]
+
+  # Generate the plot
+  p <- ggplot(data = plot_data) +
+          geom_hline(yintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_line(aes(x = 100*(POP_CHANGE), y = 100*(mev_change), color = urban)) + 
+          geom_ribbon(aes(x = 100*(POP_CHANGE), ymin = 100*(mev_change_lower), ymax = 100*(mev_change_upper), 
+                          fill = urban), alpha = 0.5) +
+          theme_minimal() +
+          facet_wrap(~ECONOMY, ncol = 2 , scales = "free") + 
+          scale_x_continuous(limits = c(-50, 100)) +
+          labs(title = paste("Population Change –", var_label_i, "Change"),
+               x = "Population Change (%)",
+               y = paste(var_label_i, "Change (%)"),
+               fill="Urban", 
+               color="Urban")
+
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/continuous plots/", var, "_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+  
+  
+  # Store the plot in the list
+  plots[[var]] <- p
+  print(plots[[var]])
+
+
+}
+
+
+
+```
+
+Nativity continuous plot
+
+```{r}
+
+pop_nativity_select<- pop_nativity_final %>% select(ECON_URBAN, variable, coef, std.error)
+
+ # Join with new_data
+  pop_nativity_table <- new_data %>% 
+    left_join(pop_nativity_select, by = "ECON_URBAN") %>%
+    mutate(
+      mev_change = coef * POP_CHANGE, 
+      mev_change_se = std.error * abs(POP_CHANGE),
+      mev_change_lower = mev_change - (1.96 * mev_change_se),
+      mev_change_upper = mev_change + (1.96 * mev_change_se)
+    )
+  
+
+
+  p <- ggplot(data = pop_nativity_table) +
+          geom_hline(yintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_line(aes(x = 100*(POP_CHANGE), y = 100*(mev_change), color = urban)) + 
+          geom_ribbon(aes(x = 100*(POP_CHANGE), ymin = 100*(mev_change_lower), ymax = 100*(mev_change_upper), 
+                          fill = urban), alpha = 0.5) +
+          theme_minimal() +
+          facet_wrap(~ECONOMY, ncol = 2 , scales = "free") + 
+          scale_x_continuous(limits = c(-50, 100)) +
+          labs(title = paste("Population Change – Foreign-Born Change"),
+               x = "Population Change (%)",
+               y = paste("Foreign-Born Change (%)"),
+               fill="Urban", 
+               color="Urban")
+
+  file_name <- paste0("/home/dmedgyesi/international/model output/plots/continuous plots/foreign_born_diff_BY_ECON_URBAN", "_plot.png")  
+  ggsave(file_name, plot = p, width = 8, height = 9, dpi = 300)
+
+```
+
+
+Collapsed/combined results
+
+
+```{r}
+
+country_gdp_results_econ_collapse_clean<- country_gdp_results_econ_collapse %>% 
+  select(Economy, variable, estimate, std.error) 
+
+econ_levels <- sort(unique(pop_gdp_results$ECONOMY))
+
+econ_levels
+
+
+pop_gdp_results<- pop_gdp_results %>% mutate(ECONOMY_COLLAPSE=case_when(ECONOMY %in% econ_levels[1:2]~"Developed", 
+                                                  ECONOMY %in% econ_levels[3:5]~"Emerging", 
+                                                  ECONOMY %in% econ_levels[6:7]~"Developing", TRUE~NA)) %>% 
+  mutate(ECONOMY_COLLAPSE=factor(ECONOMY_COLLAPSE, c("Developed", "Emerging", "Developing")))
+
+
+pop_mev_results_econ_collapse<- inner_join(pop_gdp_results, country_gdp_results_econ_collapse_clean, by=c("ECONOMY_COLLAPSE"="Economy"))
+
+
+pop_mev_results_econ_collapse<- pop_mev_results_econ_collapse %>% 
+   mutate(
+      pop_mev_coef = pop_gdp_estimate * estimate, 
+      pop_mev_std_error = sqrt((estimate^2 * pop_gdp_std.error^2) + 
+                           (pop_gdp_estimate^2 * std.error^2)),
+      pop_mev_lower = pop_mev_coef - 1.96 * pop_mev_std_error,
+      pop_mev_upper = pop_mev_coef + 1.96 * pop_mev_std_error
+    )
+
+
+```
+
+Linear plot 
+
+```{r}
+
+
+# Get unique dependent variables
+vars <- unique(pop_mev_results_econ_collapse$variable)
+
+var_label<- c("GDP per capita", "Residential Property Price", "Commercial Property Price",  "Debt-to-income", "Unemployment", "Income",  "Price Living Index")
+
+var_map <- setNames(var_label, vars)
+
+
+
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each dependent variable and generate a plot
+for (var in vars) {
+  
+  # Subset data for the specific dependent variable
+  plot_data <- pop_mev_results_econ_collapse %>%
+    filter(variable == var) %>% 
+    mutate(ECONOMY=factor(ECONOMY, levels = rev(unique(ECONOMY))))
+    
+  var_label_i <- var_map[var]
+
+  # Generate the forest plot
+  p <- ggplot(plot_data, aes(x = pop_mev_coef, y = ECONOMY, color = urban, shape = urban)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +  # Vertical reference line at 0
+    geom_point(position = position_dodge(width = 0.5), size = 3) +  # Point estimates
+    geom_errorbarh(aes(xmin = pop_mev_lower, xmax = pop_mev_upper), 
+                   position = position_dodge(width = 0.5), height = 0.2) +  # Confidence intervals
+    theme_minimal() +
+    labs(title = paste("Population Change –", var_label_i, "Change"),
+         x = paste("Linear coefficient (95% CI)"),
+         y = "",
+         color = "Urban") +
+    theme(legend.position = "bottom",
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    guides(color = guide_legend("Urban"), shape = guide_legend("Urban"))
+  
+  # Store the plot in the list
+  plots[[var]] <- p
+}
+
+# Display all plots
+plots[[2]]
+
+
+file_name <- paste0("/home/dmedgyesi/international/model output/plots/coefficient plots/", "RPPI_CHANGE", "_BY_ECON_URBAN", "_plot.png")  
+
+ggsave(file_name, plot = plots[[2]], width = 8, height = 9, dpi = 300)
+  
+
+file_name <- paste0("/home/dmedgyesi/international/model output/plots/coefficient plots/", "CPPI_CHANGE", "_BY_ECON_URBAN", "_plot.png")  
+
+ggsave(file_name, plot = plots[[3]], width = 8, height = 9, dpi = 300)
+  
+
+```
+
+
+Table 
+
+
+```{r}
+
+
+pop_mev_results_econ_collapse_select<- pop_mev_results_econ_collapse %>% 
+  select(ECON_URBAN, variable, pop_mev_coef, pop_mev_std_error) 
+
+
+# Get unique dependent variables
+vars <- unique(pop_mev_results_econ_collapse_select$variable)
+
+# Create an empty list to store data frames
+pop_mev_econ_collapse_tables <- list()
+
+# Loop through each dependent variable
+for (var in vars) {
+  
+  # Filter data for the current dependent variable
+  pop_mev_results_filter <- pop_mev_results_econ_collapse_select %>%
+    filter(variable == var)
+  
+  # Join with new_data
+  pop_mev_table <- new_data %>% 
+    left_join(pop_mev_results_filter, by = "ECON_URBAN") %>%
+    mutate(
+      mev_change = pop_mev_coef * POP_CHANGE, 
+      mev_change_se = pop_mev_std_error * abs(POP_CHANGE),
+      mev_change_lower = mev_change - (1.96 * mev_change_se),
+      mev_change_upper = mev_change + (1.96 * mev_change_se)
+    )
+  
+  # Store dataframe in list with the dependent variable as the key
+  pop_mev_econ_collapse_tables[[var]] <- pop_mev_table
+}
+
+
+
+
+```
+
+
+```{r}
+
+# Get unique dependent variables
+vars <- names(pop_mev_econ_collapse_tables)
+
+var_label<- c("GDP per capita", "Residential Property Price", "Commercial Property Price",
+              "Debt-to-Income", "Unemployment", "Income",  "Price Living Index")
+
+var_map <- setNames(var_label, vars)
+
+
+
+
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each processed dataset (PLOTTING ONLY)
+for (var in names(pop_mev_econ_collapse_tables)) {
+  
+  # Extract the processed dataframe
+  plot_data <- pop_mev_econ_collapse_tables[[var]]
+  
+  var_label_i <- var_map[var]
+
+  # Generate the plot
+  p <- ggplot(data = plot_data) +
+          geom_hline(yintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_vline(xintercept = 0, col = "darkgrey", linetype = "dashed") +  
+          geom_line(aes(x = 100*(POP_CHANGE), y = 100*(mev_change), color = urban)) + 
+          geom_ribbon(aes(x = 100*(POP_CHANGE), ymin = 100*(mev_change_lower), ymax = 100*(mev_change_upper), 
+                          fill = urban), alpha = 0.5) +
+          theme_minimal() +
+          facet_wrap(~ECONOMY, ncol = 2, scales="free") + 
+          scale_x_continuous(limits = c(-50, 100)) +
+          labs(title = paste("Population Change –", var_label_i, "Change"),
+               x = "Population Change (%)",
+               y = paste(var_label_i, "Change (%)"),
+               fill="Urban", 
+               color="Urban")
+
+  # Store the plot in the list
+  plots[[var]] <- p
+  print(plots[[var]])
+
+
+}
+
+
+file_name <- paste0("/home/dmedgyesi/international/model output/plots/continuous plots/", "RPPI_CHANGE", "_BY_ECON_URBAN", "_plot.png")  
+
+ggsave(file_name, plot = plots[[2]], width = 8, height = 9, dpi = 300)
+  
+
+file_name <- paste0("/home/dmedgyesi/international/model output/plots/continuous plots/", "CPPI_CHANGE", "_BY_ECON_URBAN", "_plot.png")  
+
+ggsave(file_name, plot = plots[[3]], width = 8, height = 9, dpi = 300)
+  
+
+```
+
+
+
+### Final Pop-MEV coefficients
+
+```{r}
+
+write_csv(pop_mev_results, file="/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_national_data_7Econ.csv")
+
+write_csv(pop_mev_results_econ_collapse, "/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_national_data_3Econ.csv")
+
+
+write_csv(pop_nativity_final, "/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_NATIVITY_national_data_3Econ.csv")
+
+
+pop_gdp_results<- read_csv("/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_grid_data_coefficients.csv")
+
+unique(pop_gdp_results$variable)
+
+pop_gdp_results<- pop_gdp_results %>% 
+  filter(variable %in% c("GDP_CHANGE", "HDI_CHANGE_INT_00", "POVERTY_CHANGE" , "median_age_DIFF", "median_age_CHANGE")) %>% 
+  select(ECON_URBAN:std.error) %>% rename(coef=estimate)
+
+unique(pop_mev_results$variable)
+
+pop_mev_results_7econ<- pop_mev_results %>% 
+  filter(variable!="gdp_capita_change") %>% 
+  select(ECON_URBAN:urban, variable, pop_mev_coef, pop_mev_std_error) %>% 
+  rename(coef=pop_mev_coef, std.error=pop_mev_std_error) %>% 
+  arrange(variable)
+
+
+unique(pop_mev_results_econ_collapse$variable)
+
+pop_mev_results_3econ<- pop_mev_results_econ_collapse %>% 
+  filter(variable %in% c("rppi_change", "cppi_change")) %>% 
+  select(ECON_URBAN:urban, variable, pop_mev_coef, pop_mev_std_error) %>% 
+  rename(coef=pop_mev_coef, std.error=pop_mev_std_error)
+
+colnames(pop_gdp_results)
+colnames(pop_mev_results_7econ)
+colnames(pop_mev_results_3econ)
+
+
+pop_mev_results_final<- rbind(pop_gdp_results, pop_mev_results_7econ, pop_mev_results_3econ, pop_nativity_final)
+
+pop_mev_results_final<- pop_mev_results_final %>% mutate(variable=toupper(variable))
+
+pop_mev_results_final<- pop_mev_results_final %>% arrange(variable, ECON_URBAN)
+
+write_csv(pop_mev_results_final, "/home/dmedgyesi/international/model output/coefficient tables/POP_CHANGE_MEVs_FINAL_COEF_TABLE.csv")
+
+unique(pop_mev_results_final$variable)
+
+```
+
+
+

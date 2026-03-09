@@ -1,0 +1,383 @@
+---
+title: "DiD national estimation"
+output: html_document
+date: "2025-03-19"
+---
+
+```{r setup, include=FALSE}
+
+library(data.table)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(haven)
+library(mgcv)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(nlme)
+
+
+
+options(scipen = 999)
+
+`%!in%` = Negate(`%in%`)
+
+
+```
+
+```{r}
+
+capitalize_first <- function(x) {
+  paste0(toupper(substr(x, 1, 1)), tolower(substr(x, 2, nchar(x))))
+}
+
+```
+
+### DiD GDP
+
+DiD GDP results
+
+```{r}
+
+DiD_GDP<- read_csv("/home/dmedgyesi/international/DID/results/tables/Select_Results_GDP_DID_tables.csv")
+
+```
+
+plot final results
+
+```{r}
+
+
+DiD_GDP<- DiD_GDP %>% 
+  mutate(type=case_when(urban=="T"~"urban", urban=="F"~"rural", urban=="overall"~"overall", TRUE~NA)) %>% 
+  mutate(type=factor(type, levels = c("overall", "urban", "rural")))
+
+# Get unique exposures and variables
+exposures <- unique(DiD_GDP$exposure)
+
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each exposure and variable
+for (exp in exposures) {
+
+    # Subset data for the specific exposure and variable
+    plot_data <- DiD_GDP %>%
+      filter(exposure == exp)
+  
+    # Generate the plot
+    p <- ggplot(plot_data, aes(x = YearsCAT, y = 100*(DiD_gdp_change_estimate), color = type, shape=type)) +
+          geom_pointrange(aes(ymin = 100 * (DiD_gdp_lower), 
+                          ymax = 100 * (DiD_gdp_upper)),
+                          linewidth = 0.25, 
+                      position = position_dodge(width = 0.3)) +      
+          geom_point(position = position_dodge(width = 0.3), size = 2.5) +  
+          geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+          geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+          xlab(paste("Years since the severe", exp, "event occurred")) +
+          ylab("GDP Change (%), 95% CI") +
+          theme_bw() +
+        scale_color_manual(values = c("rural" = "#d95f02", "urban" = "#7570b3", "overall" = "black")) + 
+        scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+        theme(plot.background = element_rect(fill = "white"),
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              panel.border = element_blank(),
+              axis.line.y = element_line(color = "black"),
+              axis.line.x = element_line(color = "black"), 
+              legend.title = element_blank()) +
+        facet_wrap(~ ECONOMY) +  # Facet by economy class
+        ggtitle(paste("Severe" ,capitalize_first(exp),"Event — GDP Change"))
+    
+    # Define file name
+   file_name <- paste0("/home/dmedgyesi/international/DID/results/MEV plots/", exp, "_", "GDP_plot.png")
+    
+    # Save the plot
+    ggsave(file_name, plot = p, width = 8, height = 6, dpi = 300)
+    
+    # Store the plot in the list
+    plots[[paste(exp)]] <- p
+  
+}
+
+# To view all plots in RStudio, you can print them:
+print(plots)
+
+
+```
+
+
+
+### DiD MEV
+
+National GDP MEV results 
+
+```{r}
+
+
+nat_mev_7<- read_csv("/home/dmedgyesi/international/national gdp - mev output/coefficient tables/gdp_mev_national_7economy.csv")
+
+nat_mev_7<- nat_mev_7 %>% filter(variable %in% c("income_change", "unemploy_diff", "dti_diff"))
+
+nat_mev_7<- nat_mev_7 %>% 
+  select(Economy, variable, estimate, std.error)
+
+nat_mev_3<- read_csv("/home/dmedgyesi/international/national gdp - mev output/coefficient tables/gdp_mev_national_3economy.csv")
+
+
+nat_mev_3<- nat_mev_3 %>% filter(variable %in% c("rppi_change", "cppi_change"))
+
+nat_mev_3<- nat_mev_3 %>% 
+  select(Economy, variable, estimate, std.error)
+
+
+
+```
+
+
+```{r}
+
+DiD_mev<- inner_join(DiD_GDP, nat_mev_7, by=c("ECONOMY"="Economy"))
+
+DiD_mev<- DiD_mev %>% 
+   mutate(
+      exposure_mev_coef = DiD_gdp_change_estimate * estimate, 
+      exposure_mev_std_error = sqrt((estimate^2 * DiD_gdp_change_se^2) + 
+                           (DiD_gdp_change_estimate^2 * std.error^2)),
+      exposure_mev_lower = exposure_mev_coef - 1.96 * exposure_mev_std_error,
+      exposure_mev_upper = exposure_mev_coef + 1.96 * exposure_mev_std_error
+    )
+
+#zero out DTI if it decreases 
+
+DiD_mev <- DiD_mev %>%
+  mutate(flg=ifelse(variable=="dti_diff" & exposure_mev_coef < 0, 1, 0)) 
+
+
+vars<- c("exposure_mev_coef", "exposure_mev_std_error", "exposure_mev_lower", "exposure_mev_upper")
+
+DiD_mev <- DiD_mev %>%
+  mutate(across(all_of(vars), ~ ifelse(flg==1, 0, .)))
+
+
+
+
+
+```
+
+
+plot
+
+```{r}
+
+# Get unique exposures and variables
+exposures <- unique(DiD_mev$exposure)
+variables <- unique(DiD_mev$variable)  
+mev_labels<- c("Income", "Unemployment", "Debt-to-Income") 
+mev_map <- setNames(mev_labels, variables)
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each exposure and variable
+for (exp in exposures) {
+  for (var in variables) {
+    
+    # Subset data for the specific exposure and variable
+    plot_data <- DiD_mev %>%
+      filter(exposure == exp, variable == var)
+    
+    mev_label <- mev_map[var]
+    
+    # Generate the plot
+    p <- ggplot(plot_data, aes(x = YearsCAT, y = 100*(exposure_mev_coef), color = type, shape=type)) +
+          geom_pointrange(aes(ymin = 100 * (exposure_mev_lower), 
+                          ymax = 100 * (exposure_mev_upper)),
+                          linewidth = 0.25, 
+                      position = position_dodge(width = 0.3)) +      
+          geom_point(position = position_dodge(width = 0.3), size = 2.5) +  
+          geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+          scale_color_manual(values = c("rural" = "#d95f02", "urban" = "#7570b3", "overall" = "black")) + 
+          scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+          xlab(paste("Years since the severe", exp, "event occurred")) +
+          ylab(paste(mev_label, "Change (%), 95% CI")) +
+          theme_bw() +
+        theme(plot.background = element_rect(fill = "white"),
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              panel.border = element_blank(),
+              axis.line.y = element_line(color = "black"),
+              axis.line.x = element_line(color = "black"), 
+              legend.title = element_blank())  +
+        facet_wrap(~ ECONOMY) +  # Facet by economy class
+        ggtitle(paste("Severe" ,capitalize_first(exp),"Event —", mev_label, "Change"))
+
+    # Define file name
+   file_name <- paste0("/home/dmedgyesi/international/DID/results/MEV plots/", exp, "_", var, "_plot.png")
+    
+    # Save the plot
+    ggsave(file_name, plot = p, width = 8, height = 6, dpi = 300)
+    
+    # Store the plot in the list
+    plots[[paste(exp, var, sep = "_")]] <- p
+  }
+}
+
+# To view all plots 
+print(plots)
+
+
+
+```
+
+
+
+
+```{r}
+
+
+econ_levels <- sort(unique(DiD_GDP$ECONOMY))
+
+econ_levels
+
+
+DiD_GDP<- DiD_GDP %>% mutate(ECONOMY_COLLAPSE=case_when(ECONOMY %in% econ_levels[1:2]~"Developed", 
+                                                  ECONOMY %in% econ_levels[3:5]~"Emerging", 
+                                                  ECONOMY %in% econ_levels[6:7]~"Developing", TRUE~NA)) %>% 
+  mutate(ECONOMY_COLLAPSE=factor(ECONOMY_COLLAPSE, c("Developed", "Emerging", "Developing")))
+
+
+
+DiD_mev_property<- inner_join(DiD_GDP, nat_mev_3, by=c("ECONOMY_COLLAPSE"="Economy"))
+
+DiD_mev_property<- DiD_mev_property %>% 
+   mutate(
+      exposure_mev_coef = DiD_gdp_change_estimate * estimate, 
+      exposure_mev_std_error = sqrt((estimate^2 * DiD_gdp_change_se^2) + 
+                           (DiD_gdp_change_estimate^2 * std.error^2)),
+      exposure_mev_lower = exposure_mev_coef - 1.96 * exposure_mev_std_error,
+      exposure_mev_upper = exposure_mev_coef + 1.96 * exposure_mev_std_error
+    )
+
+
+
+```
+
+
+plot
+
+```{r}
+
+# Get unique exposures and variables
+exposures <- unique(DiD_mev_property$exposure)
+variables <- unique(DiD_mev_property$variable)  
+mev_labels<- c("Residential Property Price", "Commercial Property Price") 
+mev_map <- setNames(mev_labels, variables)
+# Create an empty list to store plots
+plots <- list()
+
+# Loop through each exposure and variable
+for (exp in exposures) {
+  for (var in variables) {
+    
+    # Subset data for the specific exposure and variable
+    plot_data <- DiD_mev_property %>%
+      filter(exposure == exp, variable == var)
+    
+    mev_label <- mev_map[var]
+  
+    # Generate the plot
+    p <- ggplot(plot_data, aes(x = YearsCAT, y = 100*(exposure_mev_coef), color = type, shape=type)) +
+          geom_pointrange(aes(ymin = 100 * (exposure_mev_lower), 
+                          ymax = 100 * (exposure_mev_upper)),
+                          linewidth = 0.25, 
+                      position = position_dodge(width = 0.3)) +      
+          geom_point(position = position_dodge(width = 0.3), size = 2.5) +  
+          geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+          scale_color_manual(values = c("rural" = "#d95f02", "urban" = "#7570b3", "overall" = "black")) + 
+          scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+          geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+          xlab(paste("Years since the severe", exp, "event occurred")) +
+          ylab(paste(mev_label, "Change (%), 95% CI")) +
+          theme_bw() +
+        theme(plot.background = element_rect(fill = "white"),
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              panel.border = element_blank(),
+              axis.line.y = element_line(color = "black"),
+              axis.line.x = element_line(color = "black"), 
+              legend.title = element_blank())  +
+        facet_wrap(~ ECONOMY) +  # Facet by economy class
+        ggtitle(paste("Severe" ,capitalize_first(exp),"Event —", mev_label, "Change"))
+    
+    # Define file name
+   file_name <- paste0("/home/dmedgyesi/international/DID/results/MEV plots/", exp, "_", var, "_plot.png")
+    
+    # Save the plot
+    ggsave(file_name, plot = p, width = 8, height = 6, dpi = 300)
+    
+    # Store the plot in the list
+    plots[[paste(exp, var, sep = "_")]] <- p
+  }
+}
+
+# To view all plots in RStudio, you can print them:
+print(plots)
+
+
+
+
+```
+
+
+### Create final table
+
+```{r}
+
+colnames(DiD_GDP)
+
+DiD_GDP_clean<- DiD_GDP %>% 
+  mutate(variable="gdp_change") %>% 
+  select(ECONOMY, urban, exposure, variable, YearsCAT, EventTime, 
+         DiD_gdp_change_estimate, DiD_gdp_change_se) %>% 
+  rename(DiD_coef=DiD_gdp_change_estimate,
+         DiD_se=DiD_gdp_change_se
+         )
+
+
+DiD_mev_clean<- DiD_mev %>% 
+  select(ECONOMY, urban, exposure, variable, YearsCAT, EventTime, 
+         exposure_mev_coef, exposure_mev_std_error) %>% 
+  rename(DiD_coef=exposure_mev_coef,
+         DiD_se=exposure_mev_std_error
+         )
+
+
+
+DiD_mev_property_clean<- DiD_mev_property %>% 
+  select(ECONOMY, urban, exposure, variable, YearsCAT, EventTime, 
+         exposure_mev_coef, exposure_mev_std_error) %>% 
+  rename(DiD_coef=exposure_mev_coef,
+         DiD_se=exposure_mev_std_error
+         )
+
+
+
+DiD_final_table<- DiD_GDP_clean %>% rbind(DiD_mev_clean) %>% rbind(DiD_mev_property_clean) %>% 
+  arrange(ECONOMY, urban, variable, exposure)
+
+
+DiD_final_table_EconUrban<- DiD_final_table %>% filter(urban %in% c("T", "F"))
+
+DiD_final_table_Econ_Overall<- DiD_final_table %>% filter(urban %in% c("overall")) %>% select(-urban)
+
+
+write_csv(DiD_final_table_EconUrban, "/home/dmedgyesi/international/DID/results/tables/DiD_final_table_EconUrban.csv")
+
+write_csv(DiD_final_table_Econ_Overall, "/home/dmedgyesi/international/DID/results/tables/DiD_final_table_Econ_Overall.csv")
+
+```
+

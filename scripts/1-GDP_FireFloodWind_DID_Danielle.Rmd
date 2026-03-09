@@ -1,0 +1,3061 @@
+---
+title: "GDP_FireFloodWind_DID_Danielle"
+output: html_document
+date: "2025-02-05"
+---
+
+```{r setup, include=FALSE}
+
+#library(sf)
+#library(terra)
+library(dplyr)
+library(readr)
+library(data.table)
+library(ggplot2)
+library(purrr)
+library(parallel)
+options(scipen = 999)
+
+if(!require(pacman)){install.packages("pacman"); library(pacman)}
+p_load(dplyr, lfe, coefplot, data.table, sandwich, lmtest, stringr, MatchIt, DiDforBigData, fixest, tidyverse, broom, ggthemes)
+
+num_cores<- detectCores()-5
+
+`%!in%` = Negate(`%in%`)
+
+
+```
+
+
+# GDP 
+
+
+```{r}
+#gdp 
+final_gdp_df <- readRDS(file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat_ready.rds")
+
+final_gdp_df<- final_gdp_df %>% mutate(INCOME_URBAN=paste0(INCOME_GRP, ", ", urban))
+
+final_gdp_df<- final_gdp_df %>% select(tile_id, ISO_A3, NAME, 
+                                       ECONOMY, urban, ECON_URBAN,
+                                       INCOME_URBAN, INCOME_GRP,
+                                       GDP2000:GDP2020, POP_CHANGE)
+
+final_gdp_df<- final_gdp_df %>% mutate(POP_LOSS=ifelse(POP_CHANGE<0, "T", "F")) %>% 
+  mutate(ECON_POPLOSS=paste0(ECONOMY, ", ", POP_LOSS))
+
+final_gdp_df <- final_gdp_df %>%
+  pivot_longer(cols = starts_with("GDP"),  # Select all columns starting with "GDP"
+               names_to = "year",        # New column for years
+               values_to = "gdp_value")      # New column for values
+
+final_gdp_df <- final_gdp_df %>%
+  mutate(year = as.numeric(gsub("GDP", "", year)))
+
+
+
+#drop areas where GDP was ever zero
+final_gdp_df <- final_gdp_df %>%
+  group_by(tile_id) %>%
+  filter(all(!is.na(gdp_value))) %>%  # Keep only rows where gdp_value is not NA for the entire group
+  ungroup()
+
+```
+
+
+# FIRE
+
+
+### Read and prep data 
+
+```{r}
+
+#fire
+global_fire_all_years <- read.csv('/mnt/theia/implications/global_fire_exposure_v2/global_fire_all_first_4_or_less.csv')
+
+look<- global_fire_all_years %>% group_by(year) %>% summarise(sum(years_since_first_hit==1, na.rm = T))
+
+#fire data not available until 2004 
+global_fire_all_years<- global_fire_all_years %>% filter(year>=2004)
+
+# Merge datasets and clean them
+global_fire_full <- inner_join(global_fire_all_years, 
+                              final_gdp_df, by=c("tile_id","year"))
+
+
+
+summary(global_fire_full$year)
+
+length(unique(global_fire_full$tile_id))
+
+count_obs<- global_fire_full %>% 
+  group_by(ECON_URBAN) %>% summarise(n_areas=length(unique(tile_id)), n_fires=sum(first_fire_event==1, na.rm = T))
+
+
+global_fire_full %>% group_by(tile_id) %>% summarise(fire_count=sum(first_fire_event==1, na.rm = T)) %>% ungroup() %>% 
+  group_by(fire_count) %>% summarise(n())
+
+
+
+# Make Event-Time Variables and Adjust for Inflation Sale Prices
+global_fire_full <- global_fire_full %>%
+  mutate(minus_seven = ifelse(years_since_first_hit <= -7 & !is.na(years_since_first_hit), 1, 0),
+         minus_six = ifelse(years_since_first_hit == -6 & !is.na(years_since_first_hit), 1, 0),
+         minus_five = ifelse(years_since_first_hit == -5 & !is.na(years_since_first_hit), 1, 0),
+         minus_four = ifelse(years_since_first_hit == -4 & !is.na(years_since_first_hit), 1, 0),
+         minus_three = ifelse(years_since_first_hit == -3 & !is.na(years_since_first_hit), 1, 0),
+         minus_two = ifelse(years_since_first_hit == -2 & !is.na(years_since_first_hit), 1, 0),
+         minus_one = ifelse(years_since_first_hit == -1 & !is.na(years_since_first_hit), 1, 0),
+         plus_zero = ifelse(years_since_first_hit == 0 & !is.na(years_since_first_hit), 1, 0),
+         plus_one = ifelse(years_since_first_hit == 1 & !is.na(years_since_first_hit), 1, 0),
+         plus_two = ifelse(years_since_first_hit == 2 & !is.na(years_since_first_hit), 1, 0),
+         plus_three = ifelse(years_since_first_hit == 3 & !is.na(years_since_first_hit), 1, 0),
+         plus_four = ifelse(years_since_first_hit == 4 & !is.na(years_since_first_hit), 1, 0),
+         plus_five = ifelse(years_since_first_hit == 5 & !is.na(years_since_first_hit), 1, 0),
+         plus_six = ifelse(years_since_first_hit == 6 & !is.na(years_since_first_hit), 1, 0),
+         plus_seven = ifelse(years_since_first_hit == 7 & !is.na(years_since_first_hit), 1, 0),
+         plus_eight = ifelse(years_since_first_hit == 8 & !is.na(years_since_first_hit), 1, 0),
+         plus_nine = ifelse(years_since_first_hit == 9 & !is.na(years_since_first_hit), 1, 0),
+         plus_ten = ifelse(years_since_first_hit == 10 & !is.na(years_since_first_hit), 1, 0),
+         plus_eleven = ifelse(years_since_first_hit == 11 & !is.na(years_since_first_hit), 1, 0),
+         plus_twelve = ifelse(years_since_first_hit == 12 & !is.na(years_since_first_hit), 1, 0))
+
+
+
+
+```
+
+
+
+
+```{r}
+
+#fyi list of countries by economy 
+
+
+Countries_by_Econ<- global_fire_full %>% 
+  group_by(ECONOMY) %>% 
+  summarise(Countries = paste(unique(NAME), collapse = ", "))
+
+write_csv(Countries_by_Econ, "/home/dmedgyesi/international/DID/results/Countries_by_Econ_List.csv")
+
+
+Count_pop_loss<- global_fire_full %>% 
+  group_by(POP_LOSS) %>% 
+  summarise(n_distinct(tile_id))
+
+```
+
+### DID all data combined  
+
+prep
+
+```{r}
+
+# cohort: year that exposure happened
+global_fire_full <- global_fire_full %>% 
+  mutate(cohort = ifelse(years_since_first_hit == 0, year, NA))  %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, year) %>%
+  fill(cohort) %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, -year) %>%
+  fill(cohort) %>%
+  arrange(tile_id, year) %>%
+  mutate(cohort = ifelse(is.na(cohort),Inf,cohort))
+
+full <- global_fire_full %>% select(tile_id, ECONOMY, urban, ECON_URBAN, 
+                                    INCOME_URBAN, INCOME_GRP,
+                                    POP_LOSS, POP_CHANGE, ECON_POPLOSS,gdp_value, year, cohort) %>%
+  setDT()
+
+
+full<- full %>% mutate(gdp_value_log=log(gdp_value))
+
+
+
+# Filter out cohorts that don't have sufficient pre-period data
+valid_cohorts <- full %>%
+  group_by(tile_id) %>%
+  mutate(has_preperiod = any(year == cohort - 1)) %>%
+  filter(has_preperiod) %>%
+  pull(cohort) %>%
+  unique()
+
+full_filtered <- full %>%
+  filter(cohort %in% valid_cohorts)
+
+
+
+
+```
+
+model
+
+```{r}
+
+
+
+#specify variables
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+#varnames$covariate_names = "month" 
+
+
+did = DiD(inputdata = full_filtered, 
+          varnames = varnames,
+          base_event = -1,
+          min_event = -5, 
+          max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+
+print(did$results_average)
+
+coef_did_combined <- tibble(did$results_average)
+
+
+
+coef_did_combined<-coef_did_combined %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+write_csv(coef_did_combined, "/home/dmedgyesi/international/DID/results/tables/Fire_GDP_AllData_DID_tables.csv")
+
+
+```
+
+plot
+
+```{r}
+
+
+
+ggplot(coef_did_combined, aes(x = EventTime, y = ATT_perc)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) 
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_AllData.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+### DID by Economy
+
+model 
+
+```{r}
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+# Store results in a list
+did_results <- list()
+did_results_cohort<- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered$ECONOMY)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered %>%
+    filter(ECONOMY == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+  did_results_cohort[[econ]]<- tibble(economy=econ, did$results_cohort)
+}
+
+# Combine all results into one dataframe
+coef_did_econ <- bind_rows(did_results)
+coef_did_cohort_econ <- bind_rows(did_results_cohort)
+
+
+coef_did_econ<-coef_did_econ %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+coef_did_cohort_econ<-coef_did_cohort_econ %>% mutate(ATT_perc=100*(exp(ATTge)-1), 
+                         lower_perc=100*(exp(ATTge - 1.965 * ATTge_SE)-1),
+                         upper_perc=100*(exp(ATTge + 1.965 * ATTge_SE)-1))
+
+
+write_csv(coef_did_econ, "/home/dmedgyesi/international/DID/results/tables/Fire_GDP_Econ_DID_tables.csv")
+
+
+```
+
+plot
+
+```{r}
+
+ggplot(coef_did_econ, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_Econ.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+#Developed
+coef_did_econ_developed<- coef_did_econ %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econ_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_Econ_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econ_emerge<- coef_did_econ %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econ_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_Econ_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econ_not_develop<- coef_did_econ %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econ_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_Econ_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+select results
+
+```{r}
+
+fire_results_econ<- coef_did_econ %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+fire_results_econ<- fire_results_econ %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+fire_results_econ <- fire_results_econ %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+
+
+
+ggplot(fire_results_econ, aes(x = YearsCAT, y = ATT_perc, color=economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe fire event occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_Econ_FINAL.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+```
+
+
+plot by cohort
+
+```{r}
+
+coef_did_cohort_econ<- coef_did_cohort_econ %>% 
+  mutate(period=case_when(Cohort %in% 2003:2009~"2003-2009", 
+                          Cohort %in% 2010:2016~"2010-2016", 
+                          TRUE~"2017-2021"))
+
+# Get unique economy classes
+economy_classes <- unique(coef_did_cohort_econ$economy)
+
+# Loop through each economy class
+for (econ in economy_classes) {
+  
+  # Filter data for the current economy class
+  df_filtered <- coef_did_cohort_econ %>% filter(economy == econ)
+  
+  # Create plot
+  p <- ggplot(df_filtered, aes(x = EventTime, y = ATT_perc,shape=period, 
+                               color =period)) +
+    geom_pointrange(aes(ymin = lower_perc, ymax = upper_perc), linewidth = 0.25) +
+    geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+    geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+    xlab("Years since the First Fire Event Occurred") +
+    ylab("GDP Percentage Change, 95% C.I.") +
+    theme_bw() +
+    theme(plot.background = element_rect(fill = "white"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black")) +
+    ggtitle(paste("GDP Impact -", econ))  # Add title for clarity
+
+  # Define the file name dynamically
+  file_name <- paste0("/home/dmedgyesi/international/DID/results/plot_cohort/DID_Fire_GDP_Econ_", econ, ".png")
+  
+  # Save the plot
+  ggsave(file_name, plot = p, width = 6, height = 6, dpi = 300)
+  
+  print(p)
+  }
+
+
+```
+
+
+
+### DID by Economy and Urbanicity 
+
+model
+
+```{r}
+
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+
+# Store results in a list
+did_results <- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered$ECON_URBAN)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered %>%
+    filter(ECON_URBAN == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+}
+
+# Combine all results into one dataframe
+coef_did_econurban <- bind_rows(did_results)
+
+
+coef_did_econurban<-coef_did_econurban %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_econurban, "/home/dmedgyesi/international/DID/results/tables/Fire_GDP_EconUrban_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+coef_did_econurban<- coef_did_econurban %>% 
+  mutate(urban=str_sub(economy, start= -1), 
+                              economy_only=str_sub(economy, start=1,end= -4)) %>% 
+  mutate(economy_label=paste0(economy_only, ", ", ifelse(urban=="F", "Rural", "Urban"))) %>% 
+  select(economy, economy_only, urban,economy_label, everything())
+
+
+ggplot(coef_did_econurban, aes(x = EventTime, y = ATT_perc, color = economy_only, shape = urban)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.position = "none") +
+facet_wrap(~ economy_label, ncol=4) 
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconUrban.png", width = 11, height = 8, dpi = 300)
+
+
+#Developed
+coef_did_econurban_developed<- coef_did_econurban %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econurban_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconUrban_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econurban_emerge<- coef_did_econurban %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econurban_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconUrban_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econurban_not_develop<- coef_did_econurban %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econurban_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconUrban_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+
+```
+
+select results
+
+```{r}
+
+fire_results<- coef_did_econurban %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+fire_results<- fire_results %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+fire_results <- fire_results %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+fire_results<- fire_results %>% 
+  mutate(type=case_when(urban=="T"~"urban", urban=="F"~"rural", TRUE~NA)) %>% 
+  mutate(type=factor(type, levels = c("rural", "urban")))
+
+
+ggplot(fire_results, aes(x = YearsCAT, y = ATT_perc, color = type, shape = type)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25,  position = position_dodge(width = 0.3)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe fire event occurred") +
+  ylab("GDP Change (%), 95% CI") +
+  theme_bw() +
+  scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.title = element_blank()) +
+  facet_wrap(~ economy_only) + # Facet by economy class
+ ggtitle("Severe Fire Event — GDP Change")
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconUrban_FINAL.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+```
+
+For journal
+
+```{r}
+
+
+fire_results<- fire_results %>% 
+  mutate(type=factor(type, levels = c("urban", "rural")))
+
+ggplot(fire_results, aes(x = YearsCAT, y = ATT_perc, fill = type)) +
+  geom_col(position = position_dodge(width = 0.6), width = 0.5) +
+  geom_errorbar(aes(ymin = lower_perc, ymax = upper_perc),
+                position = position_dodge(width = 0.6),
+                width = 0.2, linewidth = 0.25) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe fire event occurred") +
+  ylab("Max GDP Decline (%), 95% CI") +
+  scale_x_discrete(labels = c("[ 0, 4)" = "0-3", "[ 4, 7)" = "4-6", "[ 7,10]" = "7-10")) +
+  scale_fill_manual(values = c("rural" = "#F8766D", "urban" = "#00BFC4")) + 
+  theme_bw() +
+  theme(
+    plot.background = element_rect(fill = "white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line.y = element_line(color = "black"),
+    axis.line.x = element_line(color = "black"),
+    legend.title = element_blank()
+  ) +
+  facet_wrap(~ economy_only) +
+  ggtitle("Severe Fire Event — GDP Change")
+
+
+ggsave("/home/dmedgyesi/international/DID/results/Fig5.png", width = 7, height = 5, dpi = 300)
+
+
+ggsave("/home/dmedgyesi/international/DID/results/Fig5.eps", width = 7, height = 5)
+
+
+
+fire_results_format<- fire_results %>% 
+  mutate(`Percent Decrease (95% CI)`= paste0(sprintf("%.2f", ATT_perc), " (", 
+                                             sprintf("%.2f", lower_perc), ", ", 
+                                             sprintf("%.2f", upper_perc), ")")) %>% 
+  select(economy_only, YearsCAT, type, `Percent Decrease (95% CI)`) %>% pivot_wider(
+    names_from = type,
+    values_from = `Percent Decrease (95% CI)`
+  ) %>% arrange(economy_only)
+
+write_csv(fire_results_format, "/home/dmedgyesi/international/DID/results/tables/Fire_GDP_EconUrban_DID_tables_3periods.csv")
+
+
+```
+
+### DID by Economy and Pop loss 
+
+model
+
+```{r}
+
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+
+# Store results in a list
+did_results <- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered$ECON_POPLOSS)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered %>%
+    filter(ECON_POPLOSS == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+}
+
+# Combine all results into one dataframe
+coef_did_econpop <- bind_rows(did_results)
+
+
+coef_did_econpop<-coef_did_econpop %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_econpop, "/home/dmedgyesi/international/DID/results/tables/Fire_GDP_EconPopLoss_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+coef_did_econpop<- coef_did_econpop %>% 
+  mutate(pop_loss=str_sub(economy, start= -1), 
+                              economy_only=str_sub(economy, start=1,end= -4)) %>% 
+  select(economy, economy_only, pop_loss, everything())
+
+ggplot(coef_did_econpop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconPop.png", width = 11, height = 8, dpi = 300)
+
+
+#Developed
+coef_did_econpop_developed<- coef_did_econpop %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econpop_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconPop_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econpop_emerge<- coef_did_econpop %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econpop_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconPop_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econpop_not_develop<- coef_did_econpop %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econpop_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Fire Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Fire_GDP_EconPop_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+
+```
+
+# FLOOD
+
+
+
+### Read and prep data 
+
+```{r}
+
+#fire
+global_flood_all_years <- read.csv('/mnt/theia/implications/global_flood_exposure_100rp_v2/global_flood_all_first_100rp.csv')
+
+
+look<- global_flood_all_years %>% 
+  group_by(year) %>% 
+  summarise(sum(first_flood_event==1, na.rm=T))
+
+# Merge datasets and clean them
+global_flood_full <- inner_join(global_flood_all_years, 
+                              final_gdp_df, by=c("tile_id","year"))
+
+
+
+length(unique(global_flood_full$tile_id))
+
+count_obs_flood<- global_flood_full %>% 
+  group_by(ECON_URBAN) %>% summarise(n_areas=length(unique(tile_id)), n_flood=sum(first_flood_event==1, na.rm = T))
+
+
+
+# Make Event-Time Variables and Adjust for Inflation Sale Prices
+global_flood_full <- global_flood_full %>%
+  mutate(minus_seven = ifelse(years_since_first_hit <= -7 & !is.na(years_since_first_hit), 1, 0),
+         minus_six = ifelse(years_since_first_hit == -6 & !is.na(years_since_first_hit), 1, 0),
+         minus_five = ifelse(years_since_first_hit == -5 & !is.na(years_since_first_hit), 1, 0),
+         minus_four = ifelse(years_since_first_hit == -4 & !is.na(years_since_first_hit), 1, 0),
+         minus_three = ifelse(years_since_first_hit == -3 & !is.na(years_since_first_hit), 1, 0),
+         minus_two = ifelse(years_since_first_hit == -2 & !is.na(years_since_first_hit), 1, 0),
+         minus_one = ifelse(years_since_first_hit == -1 & !is.na(years_since_first_hit), 1, 0),
+         plus_zero = ifelse(years_since_first_hit == 0 & !is.na(years_since_first_hit), 1, 0),
+         plus_one = ifelse(years_since_first_hit == 1 & !is.na(years_since_first_hit), 1, 0),
+         plus_two = ifelse(years_since_first_hit == 2 & !is.na(years_since_first_hit), 1, 0),
+         plus_three = ifelse(years_since_first_hit == 3 & !is.na(years_since_first_hit), 1, 0),
+         plus_four = ifelse(years_since_first_hit == 4 & !is.na(years_since_first_hit), 1, 0),
+         plus_five = ifelse(years_since_first_hit == 5 & !is.na(years_since_first_hit), 1, 0),
+         plus_six = ifelse(years_since_first_hit == 6 & !is.na(years_since_first_hit), 1, 0),
+         plus_seven = ifelse(years_since_first_hit == 7 & !is.na(years_since_first_hit), 1, 0),
+         plus_eight = ifelse(years_since_first_hit == 8 & !is.na(years_since_first_hit), 1, 0),
+         plus_nine = ifelse(years_since_first_hit == 9 & !is.na(years_since_first_hit), 1, 0),
+         plus_ten = ifelse(years_since_first_hit == 10 & !is.na(years_since_first_hit), 1, 0),
+         plus_eleven = ifelse(years_since_first_hit == 11 & !is.na(years_since_first_hit), 1, 0),
+         plus_twelve = ifelse(years_since_first_hit == 12 & !is.na(years_since_first_hit), 1, 0))
+
+
+
+
+
+```
+
+prep
+
+```{r}
+
+# cohort: year that exposure happened
+global_flood_full <- global_flood_full %>% 
+  mutate(cohort = ifelse(years_since_first_hit == 0, year, NA))  %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, year) %>%
+  fill(cohort) %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, -year) %>%
+  fill(cohort) %>%
+  arrange(tile_id, year) %>%
+  mutate(cohort = ifelse(is.na(cohort),Inf,cohort))
+
+full_flood <- global_flood_full %>% select(tile_id, ECONOMY, urban, ECON_URBAN,
+                                           INCOME_URBAN, INCOME_GRP,
+                                           gdp_value, year, cohort) %>%
+  setDT()
+
+
+full_flood<- full_flood %>% mutate(gdp_value_log=log(gdp_value))
+
+
+
+# Filter out cohorts that don't have sufficient pre-period data
+valid_cohorts <- full_flood %>%
+  group_by(tile_id) %>%
+  mutate(has_preperiod = any(year == cohort - 1)) %>%
+  filter(has_preperiod) %>%
+  pull(cohort) %>%
+  unique()
+
+full_filtered_flood <- full_flood %>%
+  filter(cohort %in% valid_cohorts)
+
+
+
+
+```
+
+
+### DID all data combined  
+
+model
+
+```{r}
+
+
+
+#specify variables
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+#varnames$covariate_names = "month" 
+
+
+did = DiD(inputdata = full_filtered_flood, 
+          varnames = varnames,
+          base_event = -1,
+          min_event = -5, 
+          max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+
+print(did$results_average)
+
+coef_did_combined_flood <- tibble(did$results_average)
+
+
+
+coef_did_combined_flood<-coef_did_combined_flood %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_combined_flood, "/home/dmedgyesi/international/DID/results/tables/Flood_GDP_AllData_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+
+ggplot(coef_did_combined_flood, aes(x = EventTime, y = ATT_perc)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) 
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_AllData.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+
+
+### DID by Economy
+
+model 
+
+```{r}
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+# Store results in a list
+did_results <- list()
+did_results_cohort<- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_flood$ECONOMY)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_flood %>%
+    filter(ECONOMY == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+  did_results_cohort[[econ]]<- tibble(economy=econ, did$results_cohort)
+}
+
+# Combine all results into one dataframe
+coef_did_econ_flood <- bind_rows(did_results)
+coef_did_cohort_econ_flood <- bind_rows(did_results_cohort)
+
+
+coef_did_econ_flood<-coef_did_econ_flood %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+coef_did_cohort_econ_flood<-coef_did_cohort_econ_flood %>% mutate(ATT_perc=100*(exp(ATTge)-1), 
+                         lower_perc=100*(exp(ATTge - 1.965 * ATTge_SE)-1),
+                         upper_perc=100*(exp(ATTge + 1.965 * ATTge_SE)-1))
+
+
+
+write_csv(coef_did_econ_flood, "/home/dmedgyesi/international/DID/results/tables/Flood_GDP_Econ_DID_tables.csv")
+
+
+```
+
+plot
+
+```{r}
+
+ggplot(coef_did_econ_flood, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_Econ.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+#Developed
+coef_did_econ_flood_developed<- coef_did_econ_flood %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econ_flood_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_Econ_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econ_flood_emerge<- coef_did_econ_flood %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econ_flood_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_Econ_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econ_flood_not_develop<- coef_did_econ_flood %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econ_flood_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_Econ_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+select results
+
+```{r}
+
+flood_results_econ<- coef_did_econ_flood %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+flood_results_econ<- flood_results_econ %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+flood_results_econ <- flood_results_econ %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+
+
+
+ggplot(flood_results_econ, aes(x = YearsCAT, y = ATT_perc, color=economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe flood event occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_Econ_FINAL.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+```
+
+
+plot by cohort
+
+```{r}
+
+coef_did_cohort_econ_flood<- coef_did_cohort_econ_flood %>% 
+  mutate(period=case_when(Cohort %in% 2003:2009~"2003-2009", 
+                          Cohort %in% 2010:2016~"2010-2016", 
+                          TRUE~"2017-2021"))
+
+# Get unique economy classes
+economy_classes <- unique(coef_did_cohort_econ_flood$economy)
+
+# Loop through each economy class
+for (econ in economy_classes) {
+  
+  # Filter data for the current economy class
+  df_filtered <- coef_did_cohort_econ_flood %>% filter(economy == econ)
+  
+  # Create plot
+  p <- ggplot(df_filtered, aes(x = EventTime, y = ATT_perc,shape=period, 
+                               color =period)) +
+    geom_pointrange(aes(ymin = lower_perc, ymax = upper_perc), linewidth = 0.25) +
+    geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+    geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+    xlab("Years since the First Flood Event Occurred") +
+    ylab("GDP Percentage Change, 95% C.I.") +
+    theme_bw() +
+    theme(plot.background = element_rect(fill = "white"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black")) +
+    ggtitle(paste("GDP Impact -", econ))  # Add title for clarity
+
+  # Define the file name dynamically
+  file_name <- paste0("/home/dmedgyesi/international/DID/results/plot_cohort/DID_Flood_GDP_Econ_", econ, ".png")
+  
+  # Save the plot
+  ggsave(file_name, plot = p, width = 6, height = 6, dpi = 300)
+  }
+
+
+```
+
+
+### DID by Economy and Urbanicity 
+
+model
+
+```{r}
+
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+
+# Store results in a list
+did_results <- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_flood$ECON_URBAN)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_flood %>%
+    filter(ECON_URBAN == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+}
+
+# Combine all results into one dataframe
+coef_did_econurban_flood <- bind_rows(did_results)
+
+
+coef_did_econurban_flood<-coef_did_econurban_flood %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_econurban_flood, "/home/dmedgyesi/international/DID/results/tables/Flood_GDP_EconUrban_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+coef_did_econurban_flood<- coef_did_econurban_flood %>% 
+  mutate(urban=str_sub(economy, start= -1), 
+                              economy_only=str_sub(economy, start=1,end= -4)) %>% 
+  mutate(economy_label=paste0(economy_only, ", ", ifelse(urban=="F", "Rural", "Urban"))) %>% 
+  select(economy, economy_only, urban,economy_label, everything())
+
+ggplot(coef_did_econurban_flood, aes(x = EventTime, y = ATT_perc, color = economy_only, shape = urban)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+   xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+   theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.position = "none") +
+facet_wrap(~ economy_label, ncol=4) 
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_EconUrban.png", width = 11, height = 8, dpi = 300)
+
+
+#Developed
+coef_did_econurban_flood_developed<- coef_did_econurban_flood %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econurban_flood_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_EconUrban_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econurban_flood_emerge<- coef_did_econurban_flood %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econurban_flood_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_EconUrban_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econurban_flood_not_develop<- coef_did_econurban_flood %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econurban_flood_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_EconUrban_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+
+```
+
+
+
+select results
+
+```{r}
+
+flood_results<- coef_did_econurban_flood %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+flood_results<- flood_results %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+flood_results <- flood_results %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+
+flood_results<- flood_results %>% 
+  mutate(type=case_when(urban=="T"~"urban", urban=="F"~"rural", TRUE~NA)) %>% 
+  mutate(type=factor(type, levels = c("rural", "urban")))
+
+
+
+
+ggplot(flood_results, aes(x = YearsCAT, y = ATT_perc, color = type, shape = type)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25,  position = position_dodge(width = 0.3)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe flood event occurred") +
+  ylab("GDP Change (%), 95% CI") +
+  theme_bw() +
+  scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.title = element_blank()) +
+  facet_wrap(~ economy_only)+  # Facet by economy class
+ ggtitle("Severe Flood Event — GDP Change")
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Flood_GDP_EconUrban_FINAL.png", width = 11, height = 8, dpi = 300)
+
+```
+
+For journal 
+
+```{r}
+
+
+flood_results<- flood_results %>% 
+  mutate(type=factor(type, levels = c("urban", "rural")))
+
+ggplot(flood_results, aes(x = YearsCAT, y = ATT_perc, fill = type)) +
+  geom_col(position = position_dodge(width = 0.6), width = 0.5) +
+  geom_errorbar(aes(ymin = lower_perc, ymax = upper_perc),
+                position = position_dodge(width = 0.6),
+                width = 0.2, linewidth = 0.25) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe flood event occurred") +
+  ylab("Max GDP Decline (%), 95% CI") +
+  scale_x_discrete(labels = c("[ 0, 4)" = "0-3", "[ 4, 7)" = "4-6", "[ 7,10]" = "7-10")) +
+  scale_fill_manual(values = c("rural" = "#F8766D", "urban" = "#00BFC4")) + 
+  theme_bw() +
+  theme(
+    plot.background = element_rect(fill = "white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line.y = element_line(color = "black"),
+    axis.line.x = element_line(color = "black"),
+    legend.title = element_blank()
+  ) +
+  facet_wrap(~ economy_only) +
+  ggtitle("Severe Flood Event — GDP Change")
+
+
+ggsave("/home/dmedgyesi/international/DID/results/Fig4.png", width = 7, height = 5, dpi = 300)
+
+
+ggsave("/home/dmedgyesi/international/DID/results/Fig4.eps", width = 7, height = 5)
+
+
+flood_results_format<- flood_results %>% 
+  mutate(`Percent Decrease (95% CI)`= paste0(sprintf("%.2f", ATT_perc), " (", 
+                                             sprintf("%.2f", lower_perc), ", ", 
+                                             sprintf("%.2f", upper_perc), ")")) %>% 
+  select(economy_only, YearsCAT, type, `Percent Decrease (95% CI)`) %>% pivot_wider(
+    names_from = type,
+    values_from = `Percent Decrease (95% CI)`
+  ) %>% arrange(economy_only)
+
+write_csv(flood_results_format, "/home/dmedgyesi/international/DID/results/tables/Flood_GDP_EconUrban_DID_tables_3periods.csv")
+
+```
+
+# WIND
+
+
+
+### Read and prep data 
+
+```{r}
+
+#wind
+global_wind_all_years <- read.csv('/mnt/theia/implications/global_wind_exposure_v2/global_wind_all_first.csv')
+
+
+global_wind_all_years <- global_wind_all_years %>% 
+  mutate(cohort = ifelse(first_wind_event == 1, year, NA))  %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, year) %>%
+  fill(cohort, .direction = "downup") %>% ungroup() %>% 
+  mutate(years_since_first_hit=year-cohort) %>% select(-cohort)
+
+look<- global_wind_all_years %>% group_by(year) %>% summarise(sum(years_since_first_hit==1, na.rm=T))
+
+
+# Merge datasets and clean them
+global_wind_full <- inner_join(global_wind_all_years, 
+                              final_gdp_df, by=c("tile_id","year"))
+
+
+
+#drop those without gdp
+global_wind_full <- global_wind_full %>%
+  filter(!is.na(gdp_value)) 
+
+
+length(unique(global_wind_full$tile_id))
+
+count_obs_wind<- global_wind_full %>% 
+  group_by(ECON_URBAN) %>% summarise(n_areas=length(unique(tile_id)), n_wind=sum(first_wind_event==1, na.rm = T))
+
+
+
+# Make Event-Time Variables and Adjust for Inflation Sale Prices
+global_wind_full <- global_wind_full %>%
+  mutate(minus_seven = ifelse(years_since_first_hit <= -7 & !is.na(years_since_first_hit), 1, 0),
+         minus_six = ifelse(years_since_first_hit == -6 & !is.na(years_since_first_hit), 1, 0),
+         minus_five = ifelse(years_since_first_hit == -5 & !is.na(years_since_first_hit), 1, 0),
+         minus_four = ifelse(years_since_first_hit == -4 & !is.na(years_since_first_hit), 1, 0),
+         minus_three = ifelse(years_since_first_hit == -3 & !is.na(years_since_first_hit), 1, 0),
+         minus_two = ifelse(years_since_first_hit == -2 & !is.na(years_since_first_hit), 1, 0),
+         minus_one = ifelse(years_since_first_hit == -1 & !is.na(years_since_first_hit), 1, 0),
+         plus_zero = ifelse(years_since_first_hit == 0 & !is.na(years_since_first_hit), 1, 0),
+         plus_one = ifelse(years_since_first_hit == 1 & !is.na(years_since_first_hit), 1, 0),
+         plus_two = ifelse(years_since_first_hit == 2 & !is.na(years_since_first_hit), 1, 0),
+         plus_three = ifelse(years_since_first_hit == 3 & !is.na(years_since_first_hit), 1, 0),
+         plus_four = ifelse(years_since_first_hit == 4 & !is.na(years_since_first_hit), 1, 0),
+         plus_five = ifelse(years_since_first_hit == 5 & !is.na(years_since_first_hit), 1, 0),
+         plus_six = ifelse(years_since_first_hit == 6 & !is.na(years_since_first_hit), 1, 0),
+         plus_seven = ifelse(years_since_first_hit == 7 & !is.na(years_since_first_hit), 1, 0),
+         plus_eight = ifelse(years_since_first_hit == 8 & !is.na(years_since_first_hit), 1, 0),
+         plus_nine = ifelse(years_since_first_hit == 9 & !is.na(years_since_first_hit), 1, 0),
+         plus_ten = ifelse(years_since_first_hit == 10 & !is.na(years_since_first_hit), 1, 0),
+         plus_eleven = ifelse(years_since_first_hit == 11 & !is.na(years_since_first_hit), 1, 0),
+         plus_twelve = ifelse(years_since_first_hit == 12 & !is.na(years_since_first_hit), 1, 0))
+
+
+```
+
+
+prep
+
+```{r}
+
+# cohort: year that exposure happened
+global_wind_full <- global_wind_full %>% 
+  mutate(cohort = ifelse(years_since_first_hit == 0, year, NA))  %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, year) %>%
+  fill(cohort) %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, -year) %>%
+  fill(cohort) %>%
+  arrange(tile_id, year) %>%
+  mutate(cohort = ifelse(is.na(cohort),Inf,cohort))
+
+full_wind <- global_wind_full %>% select(tile_id, ECONOMY, urban, ECON_URBAN,
+                                         INCOME_URBAN, INCOME_GRP,
+                                         gdp_value, year, cohort) %>%
+  setDT()
+
+
+full_wind<- full_wind %>% mutate(gdp_value_log=log(gdp_value))
+
+
+
+# Filter out cohorts that don't have sufficient pre-period data
+valid_cohorts <- full_wind %>%
+  group_by(tile_id) %>%
+  mutate(has_preperiod = any(year == cohort - 1)) %>%
+  filter(has_preperiod) %>%
+  pull(cohort) %>%
+  unique()
+
+full_filtered_wind <- full_wind %>%
+  filter(cohort %in% valid_cohorts)
+
+
+
+
+```
+
+
+### DID all data combined  
+
+model
+
+```{r}
+
+
+
+#specify variables
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+#varnames$covariate_names = "month" 
+
+
+did = DiD(inputdata = full_filtered_wind, 
+          varnames = varnames,
+          base_event = -1,
+          min_event = -5, 
+          max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+
+print(did$results_average)
+
+coef_did_combined_wind <- tibble(did$results_average)
+
+
+
+coef_did_combined_wind<-coef_did_combined_wind %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_combined_wind, "/home/dmedgyesi/international/DID/results/tables/Wind_GDP_AllData_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+
+ggplot(coef_did_combined_wind, aes(x = EventTime, y = ATT_perc)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) 
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_AllData.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+
+
+### DID by Economy
+
+model 
+
+```{r}
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+# Store results in a list
+did_results <- list()
+did_results_cohort<- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_wind$ECONOMY)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_wind %>%
+    filter(ECONOMY == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+  did_results_cohort[[econ]]<- tibble(economy=econ, did$results_cohort)
+}
+
+# Combine all results into one dataframe
+coef_did_econ_wind <- bind_rows(did_results)
+coef_did_cohort_econ_wind <- bind_rows(did_results_cohort)
+
+
+
+coef_did_econ_wind<-coef_did_econ_wind %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+coef_did_cohort_econ_wind<-coef_did_cohort_econ_wind %>% mutate(ATT_perc=100*(exp(ATTge)-1), 
+                         lower_perc=100*(exp(ATTge - 1.965 * ATTge_SE)-1),
+                         upper_perc=100*(exp(ATTge + 1.965 * ATTge_SE)-1))
+
+
+
+write_csv(coef_did_econ_wind, "/home/dmedgyesi/international/DID/results/tables/Wind_GDP_Econ_DID_tables.csv")
+
+
+```
+
+plot
+
+```{r}
+
+ggplot(coef_did_econ_wind, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_Econ.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+#Developed
+coef_did_econ_wind_developed<- coef_did_econ_wind %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econ_wind_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_Econ_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econ_wind_emerge<- coef_did_econ_wind %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econ_wind_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_Econ_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econ_wind_not_develop<- coef_did_econ_wind %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econ_wind_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_Econ_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+select results
+
+```{r}
+
+wind_results_econ<- coef_did_econ_wind %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+wind_results_econ<- wind_results_econ %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+wind_results_econ <- wind_results_econ %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+
+
+
+ggplot(wind_results_econ, aes(x = YearsCAT, y = ATT_perc, color=economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe wind event occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_Econ_FINAL.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+```
+
+
+
+plot by cohort
+
+```{r}
+
+coef_did_cohort_econ_wind<- coef_did_cohort_econ_wind %>% 
+  mutate(period=case_when(Cohort %in% 2003:2009~"2003-2009", 
+                          Cohort %in% 2010:2016~"2010-2016", 
+                          TRUE~"2017-2021"))
+
+# Get unique economy classes
+economy_classes <- unique(coef_did_cohort_econ_wind$economy)
+
+# Loop through each economy class
+for (econ in economy_classes) {
+  
+  # Filter data for the current economy class
+  df_filtered <- coef_did_cohort_econ_wind %>% filter(economy == econ)
+  
+  # Create plot
+  p <- ggplot(df_filtered, aes(x = EventTime, y = ATT_perc,shape=period, 
+                               color =period)) +
+    geom_pointrange(aes(ymin = lower_perc, ymax = upper_perc), linewidth = 0.25) +
+    geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+    geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+    xlab("Years since the First Wind Event Occurred") +
+    ylab("GDP Percentage Change, 95% C.I.") +
+    theme_bw() +
+    theme(plot.background = element_rect(fill = "white"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black")) +
+    ggtitle(paste("GDP Impact -", econ))  # Add title for clarity
+
+  # Define the file name dynamically
+  file_name <- paste0("/home/dmedgyesi/international/DID/results/plot_cohort/DID_Wind_GDP_Econ_", econ, ".png")
+  
+  # Save the plot
+  ggsave(file_name, plot = p, width = 6, height = 6, dpi = 300)
+  }
+
+
+```
+
+
+
+### DID by Economy and Urbanicity 
+
+model
+
+```{r}
+
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+
+# Store results in a list
+did_results <- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_wind$ECON_URBAN)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_wind %>%
+    filter(ECON_URBAN == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -5, 
+             max_event = 10, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+}
+
+# Combine all results into one dataframe
+coef_did_econurban_wind <- bind_rows(did_results)
+
+
+coef_did_econurban_wind<-coef_did_econurban_wind %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                         lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                         upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+write_csv(coef_did_econurban_wind, "/home/dmedgyesi/international/DID/results/tables/Wind_GDP_EconUrban_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+coef_did_econurban_wind<- coef_did_econurban_wind %>% 
+  mutate(urban=str_sub(economy, start= -1), 
+                              economy_only=str_sub(economy, start=1,end= -4)) %>% 
+  mutate(economy_label=paste0(economy_only, ", ", ifelse(urban=="F", "Rural", "Urban"))) %>% 
+  select(economy, economy_only, urban,economy_label, everything())
+
+ggplot(coef_did_econurban_flood, aes(x = EventTime, y = ATT_perc, color = economy_only, shape = urban)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+   xlab("Years since the First Flood Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+   theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.position = "none") +
+facet_wrap(~ economy_label, ncol=4) 
+
+
+####
+
+ggplot(coef_did_econurban_wind, aes(x = EventTime, y = ATT_perc, color = economy_only, shape = urban)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+   theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.position = "none") +
+facet_wrap(~ economy_label, ncol=4) 
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_EconUrban.png", width = 11, height = 8, dpi = 300)
+
+
+#Developed
+coef_did_econurban_wind_developed<- coef_did_econurban_wind %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econurban_wind_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_EconUrban_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econurban_wind_emerge<- coef_did_econurban_wind %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econurban_wind_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_EconUrban_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econurban_wind_not_develop<- coef_did_econurban_wind %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econurban_wind_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First wind Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_EconUrban_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+
+```
+
+select results
+
+```{r}
+
+
+wind_results<- coef_did_econurban_wind %>% filter(EventTime>=0) %>% mutate(YearsCAT=cut2(EventTime, cuts = c(0,4,7,10)))
+
+wind_results<- wind_results %>% group_by(economy, YearsCAT) %>% mutate(flg=case_when(ATT_perc==min(ATT_perc)~T, TRUE~F)) %>% ungroup() %>% filter(flg==T)
+
+vars<- c("ATTe", "ATTe_SE", "ATT_perc", "lower_perc", "upper_perc")
+
+wind_results <- wind_results %>%
+  mutate(across(all_of(vars), ~ ifelse(ATT_perc > 0, 0, .)))
+
+
+
+wind_results<- wind_results %>% 
+  mutate(type=case_when(urban=="T"~"urban", urban=="F"~"rural", TRUE~NA)) %>% 
+  mutate(type=factor(type, levels = c("rural", "urban")))
+
+
+ggplot(wind_results, aes(x = YearsCAT, y = ATT_perc, color = type, shape = type)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25, position = position_dodge(width = 0.3)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the severe wind event occurred") +
+ ylab("GDP Change (%), 95% CI") +
+  theme_bw() +
+  scale_x_discrete(labels=c("[ 0, 4)"="0-3", "[ 4, 7)"= "4-6", "[ 7,10]"="7-10"))+
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"), 
+        legend.title = element_blank()) +
+  facet_wrap(~ economy_only)+  # Facet by economy class
+ ggtitle("Severe Wind Event — GDP Change")
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_Wind_GDP_EconUrban_FINAL.png", width = 11, height = 8, dpi = 300)
+
+
+wind_results_format<- wind_results %>% 
+  mutate(`Percent Decrease (95% CI)`= paste0(sprintf("%.2f", ATT_perc), " (", 
+                                             sprintf("%.2f", lower_perc), ", ", 
+                                             sprintf("%.2f", upper_perc), ")")) %>% 
+  select(economy_only, YearsCAT, type, `Percent Decrease (95% CI)`) %>% pivot_wider(
+    names_from = type,
+    values_from = `Percent Decrease (95% CI)`
+  ) %>% arrange(economy_only)
+
+write_csv(wind_results_format, "/home/dmedgyesi/international/DID/results/tables/Wind_GDP_EconUrban_DID_tables_3periods.csv")
+
+
+
+```
+
+
+### Save final results
+
+```{r}
+
+
+### select results 
+
+econ_levels <- sort(unique(final_gdp_df$ECONOMY))
+
+econ_levels
+
+### FIRE 
+
+select_econ<- econ_levels[c(3,4,6,7)]
+
+select_econ_urban<- econ_levels[econ_levels %!in% select_econ]
+
+
+fire_results_econ_select<- fire_results_econ %>% 
+  filter(economy %in% select_econ) %>% 
+  mutate(urban="overall") %>% select(economy, urban, everything())
+
+fire_results_econurban_select<- fire_results %>% 
+  filter(economy_only %in% select_econ_urban) %>% 
+  select(-c(economy, economy_label, type)) %>% rename(economy=economy_only)
+
+fire_results_combined<- rbind(fire_results_econ_select, fire_results_econurban_select)
+
+fire_results_combined<- fire_results_combined %>% mutate(exposure="fire")
+
+### FLOOD
+
+select_econ<- econ_levels[c(2,4,5,6)]
+
+select_econ_urban<- econ_levels[econ_levels %!in% select_econ]
+
+
+flood_results_econ_select<- flood_results_econ %>% 
+  filter(economy %in% select_econ) %>% 
+  mutate(urban="overall") %>% select(economy, urban, everything())
+
+flood_results_econurban_select<- flood_results %>% 
+  filter(economy_only %in% select_econ_urban) %>% 
+  select(-c(economy, economy_label, type)) %>% rename(economy=economy_only)
+
+flood_results_combined<- rbind(flood_results_econ_select, flood_results_econurban_select)
+
+flood_results_combined<- flood_results_combined %>% mutate(exposure="flood")
+
+
+### WIND 
+select_econ<- econ_levels[c(2,3,4,5)]
+
+select_econ_urban<- econ_levels[econ_levels %!in% select_econ]
+
+
+wind_results_econ_select<- wind_results_econ %>% 
+  filter(economy %in% select_econ) %>% 
+  mutate(urban="overall") %>% select(economy, urban, everything())
+
+wind_results_econurban_select<- wind_results %>% 
+  filter(economy_only %in% select_econ_urban) %>% 
+  select(-c(economy, economy_label, type)) %>% rename(economy=economy_only)
+
+wind_results_combined<- rbind(wind_results_econ_select, wind_results_econurban_select)
+
+wind_results_combined<- wind_results_combined %>% mutate(exposure="wind")
+
+### PULL TOGETHER
+
+gdp_results_all_exposures<- fire_results_combined %>% rbind(flood_results_combined) %>% rbind(wind_results_combined)
+
+
+colnames(gdp_results_all_exposures)
+
+gdp_results_all_exposures<- gdp_results_all_exposures %>% 
+  select(exposure, economy:urban, YearsCAT, EventTime, ATTe, ATTe_SE) %>% 
+  mutate(DiD_gdp_change_estimate=(exp(ATTe)-1), 
+         DiD_gdp_change_se=exp(ATTe)*ATTe_SE,
+                         DiD_gdp_lower=DiD_gdp_change_estimate - 1.965 * DiD_gdp_change_se,
+                         DiD_gdp_upper=DiD_gdp_change_estimate + 1.965 * DiD_gdp_change_se) %>% 
+  rename(ECONOMY=economy)
+
+
+
+write_csv(gdp_results_all_exposures, "/home/dmedgyesi/international/DID/results/tables/Select_Results_GDP_DID_tables.csv")
+
+
+```
+
+
+#### EXTRAAA
+
+# FLOOD 20yr
+
+
+
+### Read and prep data 
+
+```{r}
+
+#fire
+global_flood20yr_all_years <- read.csv('/mnt/theia/implications/global_flood_exposure/global_flood_all_first.csv')
+
+
+# Merge datasets and clean them
+global_flood20yr_full <- left_join(global_flood20yr_all_years, 
+                               final_gdp_df, by=c("tile_id","year"))
+
+
+#Econ and Urban flag
+global_flood20yr_full<- global_flood20yr_full %>% mutate(ECON_URBAN=paste0(ECONOMY, ", ",urban))
+
+
+#drop those without gdp
+global_flood20yr_full <- global_flood20yr_full %>%
+  filter(!is.na(gdp_value)) 
+
+
+length(unique(global_flood20yr_full$tile_id))
+
+count_obs_flood20yr<- global_flood20yr_full %>% 
+  group_by(ECON_URBAN) %>% summarise(n_areas=length(unique(tile_id)), n_flood=sum(first_flood_event==1, na.rm = T))
+
+
+
+# Make Event-Time Variables and Adjust for Inflation Sale Prices
+global_flood20yr_full <- global_flood20yr_full %>%
+  mutate(minus_seven = ifelse(years_since_first_hit <= -7 & !is.na(years_since_first_hit), 1, 0),
+         minus_six = ifelse(years_since_first_hit == -6 & !is.na(years_since_first_hit), 1, 0),
+         minus_five = ifelse(years_since_first_hit == -5 & !is.na(years_since_first_hit), 1, 0),
+         minus_four = ifelse(years_since_first_hit == -4 & !is.na(years_since_first_hit), 1, 0),
+         minus_three = ifelse(years_since_first_hit == -3 & !is.na(years_since_first_hit), 1, 0),
+         minus_two = ifelse(years_since_first_hit == -2 & !is.na(years_since_first_hit), 1, 0),
+         minus_one = ifelse(years_since_first_hit == -1 & !is.na(years_since_first_hit), 1, 0),
+         plus_zero = ifelse(years_since_first_hit == 0 & !is.na(years_since_first_hit), 1, 0),
+         plus_one = ifelse(years_since_first_hit == 1 & !is.na(years_since_first_hit), 1, 0),
+         plus_two = ifelse(years_since_first_hit == 2 & !is.na(years_since_first_hit), 1, 0),
+         plus_three = ifelse(years_since_first_hit == 3 & !is.na(years_since_first_hit), 1, 0),
+         plus_four = ifelse(years_since_first_hit == 4 & !is.na(years_since_first_hit), 1, 0),
+         plus_five = ifelse(years_since_first_hit == 5 & !is.na(years_since_first_hit), 1, 0),
+         plus_six = ifelse(years_since_first_hit == 6 & !is.na(years_since_first_hit), 1, 0),
+         plus_seven = ifelse(years_since_first_hit == 7 & !is.na(years_since_first_hit), 1, 0),
+         plus_eight = ifelse(years_since_first_hit == 8 & !is.na(years_since_first_hit), 1, 0),
+         plus_nine = ifelse(years_since_first_hit == 9 & !is.na(years_since_first_hit), 1, 0),
+         plus_ten = ifelse(years_since_first_hit == 10 & !is.na(years_since_first_hit), 1, 0),
+         plus_eleven = ifelse(years_since_first_hit == 11 & !is.na(years_since_first_hit), 1, 0),
+         plus_twelve = ifelse(years_since_first_hit == 12 & !is.na(years_since_first_hit), 1, 0))
+
+
+
+
+
+```
+
+
+### DID all data combined  
+
+prep
+
+```{r}
+
+# cohort: year that exposure happened
+global_flood20yr_full <- global_flood20yr_full %>% 
+  mutate(cohort = ifelse(years_since_first_hit == 0, year, NA))  %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, year) %>%
+  fill(cohort) %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, -year) %>%
+  fill(cohort) %>%
+  arrange(tile_id, year) %>%
+  mutate(cohort = ifelse(is.na(cohort),Inf,cohort))
+
+full_flood20yr <- global_flood20yr_full %>% select(tile_id, ECONOMY, urban, ECON_URBAN,gdp_value, year, cohort) %>%
+  setDT()
+
+
+full_flood20yr<- full_flood20yr %>% mutate(gdp_value_log=log(gdp_value))
+
+
+
+# Filter out cohorts that don't have sufficient pre-period data
+valid_cohorts <- full_flood20yr %>%
+  group_by(tile_id) %>%
+  mutate(has_preperiod = any(year == cohort - 1)) %>%
+  filter(has_preperiod) %>%
+  pull(cohort) %>%
+  unique()
+
+full_filtered_flood20yr <- full_flood20yr %>%
+  filter(cohort %in% valid_cohorts)
+
+
+
+
+```
+
+model
+
+```{r}
+
+
+
+#specify variables
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+#varnames$covariate_names = "month" 
+
+
+did = DiD(inputdata = full_filtered_flood20yr, 
+          varnames = varnames,
+          base_event = -1,
+          min_event = -7, 
+          max_event = 12, parallel_cores = num_cores, control_group = "future-treated")
+
+print(did$results_average)
+
+coef_did_combined_flood20yr <- tibble(did$results_average)
+
+
+
+coef_did_combined_flood20yr<-coef_did_combined_flood20yr %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                                                            lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                                                            upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_combined_flood20yr, "/home/dmedgyesi/international/DID/results/tables/flood20yr_GDP_AllData_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+
+
+ggplot(coef_did_combined_flood20yr, aes(x = EventTime, y = ATT_perc)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) 
+
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_AllData.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+
+
+### DID by Economy
+
+model 
+
+```{r}
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+# Store results in a list
+did_results <- list()
+did_results_cohort<- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_flood20yr$ECONOMY)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_flood20yr %>%
+    filter(ECONOMY == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -7, 
+             max_event = 12, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+  did_results_cohort[[econ]]<- tibble(economy=econ, did$results_cohort)
+}
+
+# Combine all results into one dataframe
+coef_did_econ_flood20yr <- bind_rows(did_results)
+coef_did_cohort_econ_flood20yr <- bind_rows(did_results_cohort)
+
+
+coef_did_econ_flood20yr<-coef_did_econ_flood20yr %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                                                    lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                                                    upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+coef_did_cohort_econ_flood20yr<-coef_did_cohort_econ_flood20yr %>% mutate(ATT_perc=100*(exp(ATTge)-1), 
+                                                                  lower_perc=100*(exp(ATTge - 1.965 * ATTge_SE)-1),
+                                                                  upper_perc=100*(exp(ATTge + 1.965 * ATTge_SE)-1))
+
+
+
+write_csv(coef_did_econ_flood20yr, "/home/dmedgyesi/international/DID/results/tables/flood20yr_GDP_Econ_DID_tables.csv")
+
+
+```
+
+plot
+
+```{r}
+
+ggplot(coef_did_econ_flood20yr, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_Econ.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+#Developed
+coef_did_econ_flood20yr_developed<- coef_did_econ_flood20yr %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econ_flood20yr_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_Econ_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econ_flood20yr_emerge<- coef_did_econ_flood20yr %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econ_flood20yr_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_Econ_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econ_flood20yr_not_develop<- coef_did_econ_flood20yr %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econ_flood20yr_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_Econ_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+```
+
+
+
+
+plot by cohort
+
+```{r}
+
+coef_did_cohort_econ_flood20yr<- coef_did_cohort_econ_flood20yr %>% 
+  mutate(period=case_when(Cohort %in% 2003:2009~"2003-2009", 
+                          Cohort %in% 2010:2016~"2010-2016", 
+                          TRUE~"2017-2021"))
+
+# Get unique economy classes
+economy_classes <- unique(coef_did_cohort_econ_flood20yr$economy)
+
+# Loop through each economy class
+for (econ in economy_classes) {
+  
+  # Filter data for the current economy class
+  df_filtered <- coef_did_cohort_econ_flood20yr %>% filter(economy == econ)
+  
+  # Create plot
+  p <- ggplot(df_filtered, aes(x = EventTime, y = ATT_perc,shape=period, 
+                               color =period)) +
+    geom_pointrange(aes(ymin = lower_perc, ymax = upper_perc), linewidth = 0.25) +
+    geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+    geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+    xlab("Years since the First flood20yr Event Occurred") +
+    ylab("GDP Percentage Change, 95% C.I.") +
+    theme_bw() +
+    theme(plot.background = element_rect(fill = "white"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y = element_line(color = "black"),
+          axis.line.x = element_line(color = "black")) +
+    ggtitle(paste("GDP Impact -", econ))  # Add title for clarity
+  
+  # Define the file name dynamically
+  file_name <- paste0("/home/dmedgyesi/international/DID/results/plot_cohort/DID_flood20yr_GDP_Econ_", econ, ".png")
+  
+  # Save the plot
+  ggsave(file_name, plot = p, width = 6, height = 6, dpi = 300)
+}
+
+
+```
+
+
+### DID by Economy and Urbanicity 
+
+model
+
+```{r}
+
+
+
+varnames = list()
+varnames$time_name = "year" 
+varnames$outcome_name = "gdp_value_log"
+varnames$cohort_name = "cohort"
+varnames$id_name = "tile_id"
+
+
+
+# Store results in a list
+did_results <- list()
+
+# Get unique economy classes
+economy_classes <- unique(full_filtered_flood20yr$ECON_URBAN)
+
+# Loop through economy classes
+for (econ in economy_classes) {
+  
+  # Filter dataset for the current economy class
+  filtered_data <- full_filtered_flood20yr %>%
+    filter(ECON_URBAN == econ)
+  
+  # Run DiD model
+  did <- DiD(inputdata = filtered_data, 
+             varnames = varnames, 
+             base_event = -1,
+             min_event = -7, 
+             max_event = 12, parallel_cores = num_cores, control_group = "future-treated")
+  
+  # Store results with economy class label
+  did_results[[econ]] <- tibble(economy = econ, did$results_average)
+}
+
+# Combine all results into one dataframe
+coef_did_econurban_flood20yr <- bind_rows(did_results)
+
+
+coef_did_econurban_flood20yr<-coef_did_econurban_flood20yr %>% mutate(ATT_perc=100*(exp(ATTe)-1), 
+                                                              lower_perc=100*(exp(ATTe - 1.965 * ATTe_SE)-1),
+                                                              upper_perc=100*(exp(ATTe + 1.965 * ATTe_SE)-1))
+
+
+
+write_csv(coef_did_econurban_flood20yr, "/home/dmedgyesi/international/DID/results/tables/flood20yr_GDP_EconUrban_DID_tables.csv")
+
+
+
+```
+
+plot
+
+```{r}
+
+ggplot(coef_did_econurban_flood20yr, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_EconUrban.png", width = 11, height = 8, dpi = 300)
+
+
+#Developed
+coef_did_econurban_flood20yr_developed<- coef_did_econurban_flood20yr %>% filter(substr(economy,1,1) %in% c(1,2))
+
+ggplot(coef_did_econurban_flood20yr_developed, aes(x = EventTime, y =ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_EconUrban_Developed.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Emerging
+coef_did_econurban_flood20yr_emerge<- coef_did_econurban_flood20yr %>% filter(substr(economy,1,1) %in% c(3,4,5))
+
+ggplot(coef_did_econurban_flood20yr_emerge, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin =lower_perc, 
+                      ymax =upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_EconUrban_Emerge.png", width = 11, height = 8, dpi = 300)
+
+
+
+#Developing
+coef_did_econurban_flood20yr_not_develop<- coef_did_econurban_flood20yr %>% filter(substr(economy,1,1) %in% c(6,7))
+
+ggplot(coef_did_econurban_flood20yr_not_develop, aes(x = EventTime, y = ATT_perc, color = economy)) +
+  geom_pointrange(aes(ymin = lower_perc, 
+                      ymax = upper_perc),
+                  linewidth = 0.25) +
+  #scale_y_continuous(labels = scales::percent,
+  #                  breaks = c(-10.725, -5.1, -1.075, -0.05, -0.025, -0.125)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", color = "grey", size = 0.5) +
+  geom_vline(aes(xintercept = -1), linetype = "dashed", color = "grey", size = 0.5) +
+  xlab("Years since the First flood20yr Event Occurred") +
+  ylab("GDP Percentage Change, 95% C.I.") +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black")) +
+  facet_wrap(~ economy)  # Facet by economy class
+
+ggsave("/home/dmedgyesi/international/DID/results/DID_flood20yr_GDP_EconUrban_NotDevelop.png", width = 11, height = 8, dpi = 300)
+
+
+
+
+
+
+```
+
+
+
+
+
+

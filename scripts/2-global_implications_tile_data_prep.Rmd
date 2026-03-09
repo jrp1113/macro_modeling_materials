@@ -1,0 +1,758 @@
+---
+title: "2-global_implications_data_prep"
+output: html_document
+date: "2024-10-28"
+---
+
+```{r setup, include=FALSE}
+
+library(data.table)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(haven)
+library(patchwork)
+library(mgcv)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(httr)
+
+```
+
+```{r}
+
+
+global_dat<- readRDS("/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat.rds")
+
+colnames(global_dat)
+
+
+```
+
+
+```{r}
+
+# 
+# countries <- st_read('/mnt/theia/implications/zhirsch/fs/international/intl_countries_shp/ne_10m_admin_0_countries.shp')
+# 
+# 
+# countries<- countries %>% st_drop_geometry()
+# 
+# countries<- countries %>% mutate(ISO_A3=case_when(ISO_A3=="-99"~ADM0_A3, TRUE~ISO_A3))
+# 
+# ISO_NAME<- countries %>% select(ISO_A3, NAME, ECONOMY, SUBREGION, REGION_WB, REGION_UN,INCOME_GRP)
+# 
+# write_csv(ISO_NAME, "/mnt/theia/implications/dmed_global_data/ISO_KEY.csv")
+
+
+```
+
+```{r}
+
+
+ISOkey<- read_csv("/mnt/theia/implications/dmed_global_data/ISO_KEY.csv")
+
+
+global_dat<- ISOkey %>% right_join(global_dat, by=c("ISO_A3"="cntry_d"))
+
+
+
+```
+
+### Population change 
+
+2000 to 2020 
+
+```{r}
+
+
+summary(global_dat$pop_00)
+summary(global_dat$pop_20)
+
+
+#remove NA's 
+#should be no NA's
+
+global_dat<- global_dat %>% filter(!is.na(pop_00))
+
+#more than 10 people in 2000 
+
+global_dat %>% group_by(pop_00>=10, pop_20>=10) %>% summarise(n())
+
+global_dat<- global_dat %>% filter(pop_00>=10 & pop_20>=10) 
+
+
+global_dat<- global_dat %>% 
+  mutate(POP_CHANGE=round((pop_20-pop_00)/pop_00,4)) %>% 
+  mutate(POP_CHANGE=ifelse(is.nan(POP_CHANGE)| is.infinite(POP_CHANGE), NA, POP_CHANGE))
+
+
+summary(global_dat$POP_CHANGE)
+
+quantile(global_dat$POP_CHANGE, probs = 0.01, na.rm = TRUE)
+
+quantile(global_dat$POP_CHANGE, probs = 0.99, na.rm = TRUE)
+
+##trim percentiles by subregion
+
+trim_cats<- global_dat %>% group_by(SUBREGION) %>% 
+  summarise(n(), n.notmiss=sum(!is.na(POP_CHANGE)),
+            `0.01`=quantile(POP_CHANGE, probs = 0.01, na.rm = TRUE), 
+            `0.99`=quantile(POP_CHANGE, probs = 0.99, na.rm = TRUE), 
+            min=min(POP_CHANGE, na.rm = T), 
+            max=max(POP_CHANGE, na.rm = T))
+
+
+
+global_dat<- global_dat %>% group_by(SUBREGION) %>% 
+  mutate(POP_CHANGE=case_when(POP_CHANGE<quantile(POP_CHANGE, probs=0.01, na.rm=T)~NA_real_, 
+                              POP_CHANGE>quantile(POP_CHANGE, probs=0.99, na.rm=T)~NA_real_,
+                              TRUE~POP_CHANGE)) %>% ungroup()
+           
+
+
+
+trim_cats<- global_dat %>% group_by(SUBREGION) %>% 
+  summarise(n(),  n.notmiss=sum(!is.na(POP_CHANGE)),
+            min=min(POP_CHANGE, na.rm = TRUE), 
+            max=max(POP_CHANGE,  na.rm = TRUE))
+
+
+global_dat %>% group_by(!is.na(POP_CHANGE)) %>% summarise(n())
+
+global_dat<- global_dat %>% filter(!is.na(POP_CHANGE))
+
+
+```
+
+
+
+### HDI 
+
+```{r}
+
+summary(global_dat$hdi_2021)
+summary(global_dat$hdi_2012)
+
+```
+
+```{r}
+# 
+# 
+# hdi_dat<- global_dat %>%
+#   select(tile_id, hdi_2012:hdi_2021) %>%
+#   mutate(hdi_interp_2000=NA,
+#          hdi_interp_2001=NA,
+#          hdi_interp_2002=NA,
+#          hdi_interp_2003=NA,
+#          hdi_interp_2004=NA,
+#          hdi_interp_2005=NA,
+#          hdi_interp_2006=NA,
+#          hdi_interp_2007=NA,
+#          hdi_interp_2008=NA,
+#          hdi_interp_2009=NA,
+#          hdi_interp_2010=NA,
+#          hdi_interp_2011=NA
+#          ) %>%
+#   select(tile_id, hdi_interp_2000:hdi_interp_2011, hdi_2012:hdi_2021) %>%
+#   filter(!is.nan(hdi_2021))
+# 
+# #interpolated missing years 
+# 
+# hdi_dat_t<- as.data.frame(t(hdi_dat[,-c(1)]))
+# 
+# colnames(hdi_dat_t)<- hdi_dat$tile_id
+# 
+# tile_id<- colnames(hdi_dat_t)
+# 
+# 
+# interpolate_hdi <- list()
+# 
+# for (i in 1:length(tile_id)) {
+#   
+#   dat <- data.frame(hdi = hdi_dat_t[, i], year = 2000:2021)
+#   
+#   # Identify the first and last years with actual data
+#   first_year <- min(dat$year[!is.na(dat$hdi)], na.rm = TRUE)
+#   last_year <- max(dat$year[!is.na(dat$hdi)], na.rm = TRUE)
+#   
+#   # Extract hdi values at those years
+#   first_val <- dat$hdi[dat$year == first_year]
+#   last_val <- dat$hdi[dat$year == last_year]
+#   
+#   # Fit a linear model
+#   mod <- lm(log(hdi) ~ year, data = dat)
+#   coef_slope <- coef(mod)["year"]  # Extract slope (rate of change)
+#   
+#   # Interpolate missing values using the estimated slope
+#   dat <- dat %>%
+#     mutate(
+#       pred = case_when(
+#         is.na(hdi) & year < first_year ~ exp(log(first_val) - coef_slope * (first_year - year)),  # Extrapolate before first data point
+#         is.na(hdi) & year > last_year  ~ exp(log(last_val) + coef_slope * (year - last_year)),   # Extrapolate after last data point
+#         is.na(hdi) ~ exp(log(first_val) + coef_slope * (year - first_year)),  # Interpolation between first & last observed values
+#         TRUE ~ hdi
+#       )
+#     ) %>%
+#     select(pred)
+#   
+#   colnames(dat) <- tile_id[i]
+#   interpolate_hdi[[i]] <- dat
+# }
+# 
+# # Combine interpolated columns
+# interpolate_hdi_df <- do.call(cbind, interpolate_hdi)
+# 
+# 
+# 
+# interpolate_hdi_df<- as.data.frame(t(interpolate_hdi_df))
+# 
+# colnames(interpolate_hdi_df)<- colnames(hdi_dat[,-c(1)])
+# 
+# interpolate_hdi_df$tile_id<- as.numeric(rownames(interpolate_hdi_df))
+#  
+# interpolate_hdi_df<- interpolate_hdi_df %>% select(tile_id, everything())
+#  
+# 
+# saveRDS(interpolate_hdi_df, file = "/home/dmedgyesi/international/data/global_implications_data/interpolate_hdi_df.rds")
+# 
+# 
+# 
+
+```
+
+
+
+
+```{r}
+
+interpolate_hdi_df<- readRDS("/home/dmedgyesi/international/data/global_implications_data/interpolate_hdi_df.rds")
+
+
+interpolate_hdi_df<- interpolate_hdi_df %>% select(tile_id, hdi_interp_2000:hdi_interp_2011)
+
+
+global_dat<- global_dat %>% left_join(interpolate_hdi_df, by="tile_id")
+
+
+
+#global_dat<- global_dat %>% 
+ # select(tile_id:gdp_pc_2022, hdi_interp_2000:hdi_interp_2011, everything())
+
+```
+
+
+```{r}
+
+#interpolated
+global_dat<- global_dat %>% 
+  mutate(HDI_CHANGE_INT_00=round((hdi_2021-hdi_interp_2000)/hdi_interp_2000,4)) %>% 
+  mutate(HDI_CHANGE_INT_00=ifelse(is.nan(HDI_CHANGE_INT_00)| is.infinite(HDI_CHANGE_INT_00), NA, HDI_CHANGE_INT_00))
+
+global_dat<- global_dat %>% 
+  mutate(HDI_DIFF_INT_00=round((hdi_2021-hdi_interp_2000),4)) %>% 
+  mutate(HDI_DIFF_INT_00=ifelse(is.nan(HDI_DIFF_INT_00)| is.infinite(HDI_DIFF_INT_00), NA, HDI_DIFF_INT_00))
+
+
+
+summary(global_dat$HDI_CHANGE_INT_00)
+summary(global_dat$HDI_DIFF_INT_00)
+
+
+quantile(global_dat$HDI_CHANGE_INT_00, seq(0,1,0.01), na.rm = TRUE)
+
+
+look<- global_dat %>% 
+  select(ISO_A3, NAME,HDI_CHANGE_INT_00)
+
+
+min(global_dat$HDI_CHANGE_INT_00, na.rm = T)
+max(global_dat$HDI_CHANGE_INT_00, na.rm = T)
+
+#not interpolated
+global_dat<- global_dat %>% 
+  mutate(HDI_CHANGE=round((hdi_2021-hdi_2012)/hdi_2012,4)) %>% 
+  mutate(HDI_DIFF=round((hdi_2021-hdi_2012),4)) %>% 
+  mutate(HDI_CHANGE=ifelse(is.nan(HDI_CHANGE)| is.infinite(HDI_CHANGE), NA, HDI_CHANGE)) %>% 
+  mutate(HDI_DIFF=ifelse(is.nan(HDI_DIFF)| is.infinite(HDI_DIFF), NA, HDI_DIFF))
+
+
+
+summary(global_dat$HDI_CHANGE)
+
+
+quantile(global_dat$HDI_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+table(is.na(global_dat$HDI_CHANGE))
+
+```
+
+
+
+### GDP 
+
+```{r}
+#evalute trends
+
+summary(global_dat$GDP2000)
+summary(global_dat$GDP2019)
+
+# Summarize the GDP columns
+summary_GDP <- global_dat %>%
+  summarise(across(GDP2000:GDP2020, sum, na.rm = TRUE)) %>%
+  pivot_longer(cols = everything(), names_to = "Year", values_to = "Sum_GDP")
+
+# Clean up year column to remove "GDP_" prefix and convert to numeric
+summary_GDP$Year <- as.numeric(sub("GDP", "", summary_GDP$Year))
+
+# Plot the summarized data
+ggplot(summary_GDP, aes(x = Year, y = Sum_GDP)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "GDP Over Time", x = "Year", y = "GDP") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+
+###gdp trimming 
+
+variables <- paste0("GDP", 2000:2020)
+
+
+# Apply outlier filtering for each variable within groups
+global_dat <- global_dat %>% 
+  group_by(ECONOMY) %>% 
+  mutate(across(all_of(variables), 
+                ~ case_when(
+                  . < quantile(., probs = 0.01, na.rm = TRUE) ~ NA_real_,
+                  . > quantile(., probs = 0.99, na.rm = TRUE) ~ NA_real_,
+                  TRUE ~ .
+                ), 
+                .names = "{.col}")) %>% 
+  ungroup()
+
+
+
+
+```
+
+
+
+
+```{r}
+
+global_dat <- global_dat %>%
+  mutate(
+    GDP_00_02 = rowMeans(select(., GDP2000, GDP2001, GDP2002), na.rm = TRUE),
+    GDP_17_19 = rowMeans(select(., GDP2017, GDP2018, GDP2019), na.rm = TRUE)
+  )
+
+
+global_dat<- global_dat %>% 
+  mutate(GDP_CHANGE=round((GDP_17_19-GDP_00_02)/GDP_00_02,4)) %>% 
+  mutate(GDP_CHANGE=ifelse(is.nan(GDP_CHANGE)| is.infinite(GDP_CHANGE), NA, GDP_CHANGE))
+
+
+summary(global_dat$GDP_CHANGE)
+
+
+quantile(global_dat$GDP_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+##trim 0.01 and 0.99 percentiles by Economy
+
+trim_cats<- global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(), n.notmiss=sum(!is.na(GDP_CHANGE)),
+            `0.01`=quantile(GDP_CHANGE, probs = 0.01, na.rm = TRUE), 
+            `0.99`=quantile(GDP_CHANGE, probs = 0.99, na.rm = TRUE))
+
+
+
+global_dat<- global_dat %>% group_by(ECONOMY) %>% 
+  mutate(GDP_CHANGE=case_when(GDP_CHANGE<quantile(GDP_CHANGE, probs=0.01, na.rm=T)~NA_real_, 
+                              GDP_CHANGE>quantile(GDP_CHANGE, probs=0.99, na.rm=T)~NA_real_,
+                              TRUE~GDP_CHANGE)) %>% ungroup()
+           
+
+
+
+global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(),  n.notmiss=sum(!is.na(GDP_CHANGE)),
+            min=min(GDP_CHANGE, na.rm = TRUE), 
+            max=max(GDP_CHANGE,  na.rm = TRUE))
+
+
+quantile(global_dat$GDP_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+table(is.na(global_dat$GDP_CHANGE))
+
+```
+
+
+
+### GDP per capita
+
+
+```{r}
+
+global_dat <- global_dat %>%
+  mutate(
+    GDP_PC_00_02 = rowMeans(select(., gdp_pc_2000, gdp_pc_2001, gdp_pc_2002), na.rm = TRUE),
+    GDP_PC_17_19 = rowMeans(select(., gdp_pc_2017, gdp_pc_2018, gdp_pc_2019), na.rm = TRUE)
+  )
+
+
+global_dat<- global_dat %>% 
+  mutate(GDP_PC_CHANGE=round((GDP_PC_17_19-GDP_PC_00_02)/GDP_PC_00_02,4)) %>% 
+  mutate(GDP_PC_CHANGE=ifelse(is.nan(GDP_PC_CHANGE)| is.infinite(GDP_PC_CHANGE), NA, GDP_PC_CHANGE))
+
+
+summary(global_dat$GDP_PC_CHANGE)
+
+
+quantile(global_dat$GDP_PC_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+##trim 0.01 and 0.99 percentiles by Economy
+
+trim_cats<- global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(), n.notmiss=sum(!is.na(GDP_PC_CHANGE)),
+            `0.01`=quantile(GDP_PC_CHANGE, probs = 0.01, na.rm = TRUE), 
+            `0.99`=quantile(GDP_PC_CHANGE, probs = 0.99, na.rm = TRUE))
+
+
+
+global_dat<- global_dat %>% group_by(ECONOMY) %>% 
+  mutate(GDP_PC_CHANGE=case_when(GDP_PC_CHANGE<quantile(GDP_PC_CHANGE, probs=0.01, na.rm=T)~NA_real_, 
+                              GDP_PC_CHANGE>quantile(GDP_PC_CHANGE, probs=0.99, na.rm=T)~NA_real_,
+                              TRUE~GDP_PC_CHANGE)) %>% ungroup()
+           
+
+
+
+global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(),  n.notmiss=sum(!is.na(GDP_PC_CHANGE)),
+            min=min(GDP_PC_CHANGE, na.rm = TRUE), 
+            max=max(GDP_PC_CHANGE,  na.rm = TRUE))
+
+
+quantile(global_dat$GDP_PC_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+table(is.na(global_dat$GDP_PC_CHANGE))
+
+```
+
+### POVERTY
+
+100 represents the highest level of deprivation and a value of 0 the lowest
+
+```{r}
+
+global_dat<- global_dat %>% mutate(GDP_log=ifelse(GDP_17_19<1000, NA, log(GDP_17_19)))
+
+global_dat<- global_dat %>% mutate(ECON_URBAN=paste(ECONOMY, urban, sep=", "))
+
+# Split dataset by ECONOMY class
+economy_groups <- split(global_dat, global_dat$ECON_URBAN)
+
+# Create an empty list to store `lme` results by variable
+lme_results_list <- list()
+
+# Loop through each ECONOMY class
+for (economy in names(economy_groups)) {
+  
+  # Subset data
+  data_subset <- economy_groups[[economy]]
+  
+  # Fit `lme` model separately for each ECONOMY class
+  mod <- lme(fixed = log(poverty_20) ~ GDP_log, 
+             random = ~ 1 | ISO_A3,  # Random intercept for country
+             data = data_subset, method = "REML", na.action = na.exclude,
+             control = lmeControl(opt = "optim"))
+  
+  # Extract model summary
+  model_summary <- as.data.frame(summary(mod)$tTable)  # Extract fixed effects
+  model_summary$term <- rownames(model_summary)  # Store term names
+  colnames(model_summary) <- c("estimate", "std.error", "DF", "t.value", "p.value", "term")
+  
+  # Compute 95% Confidence Intervals
+  model_summary <- model_summary %>%
+          filter(term == "GDP_log") %>%
+    mutate(lower = estimate - 1.96 * std.error,
+           upper = estimate + 1.96 * std.error,
+           ECON_URBAN = economy) %>%
+    select(ECON_URBAN, term, estimate, std.error, p.value, lower, upper)
+  
+  # Store the results for this ECONOMY class
+  lme_results_list[[economy]] <- model_summary
+}
+
+# Combine all results into a single dataframe
+lme_results_df <- bind_rows(lme_results_list)
+
+# Round numeric values to 4 decimals
+lme_results_df <- lme_results_df %>%
+  mutate_if(is.numeric, round, 4)
+
+# View the final combined dataframe
+print(lme_results_df)
+
+# Display first element of results list
+lme_results_list[[1]]
+
+lme_results_df<- lme_results_df %>% select(ECON_URBAN, estimate) %>% rename(poverty_coef=estimate)
+
+
+global_dat<- global_dat %>% left_join(lme_results_df, by="ECON_URBAN")
+
+
+
+global_dat <- global_dat %>%
+  mutate(
+    GDP_diff = log(GDP_00_02) - log(GDP_17_19),  # Compute GDP log difference
+    log_poverty_2000 = log(poverty_20) + (poverty_coef * GDP_diff),  # Apply the coefficient
+    poverty_00 = exp(log_poverty_2000)  # Convert back from log scale
+  )
+
+global_dat<- global_dat %>% 
+  mutate(poverty_00=ifelse(is.infinite(poverty_00), NA, poverty_00))
+
+quantile(global_dat$poverty_00, seq(0,1, 0.01), na.rm=T)
+
+quantile(global_dat$poverty_20, seq(0,1, 0.01), na.rm=T)
+
+
+cor(global_dat$poverty_00, global_dat$poverty_20, use = "complete.obs")
+
+```
+
+
+
+```{r}
+
+global_dat<- global_dat %>% 
+  mutate(POVERTY_CHANGE=round((poverty_20-poverty_00)/poverty_00, 4))
+
+look<-global_dat %>% select(poverty_20, poverty_00, poverty_coef, GDP_diff,GDP_00_02, GDP_17_19, GDP_CHANGE, POVERTY_CHANGE)
+
+
+##trim 0.01 and 0.99 percentiles by Economy
+#looks good, dont trim
+trim_cats<- global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(), n.notmiss=sum(!is.na(POVERTY_CHANGE)),
+            `0.01`=quantile(POVERTY_CHANGE, probs = 0.01, na.rm = TRUE), 
+            `0.99`=quantile(POVERTY_CHANGE, probs = 0.99, na.rm = TRUE))
+
+
+
+#global_dat<- global_dat %>% group_by(ECONOMY) %>% 
+#  mutate(POVERTY_CHANGE=case_when(POVERTY_CHANGE<quantile(POVERTY_CHANGE, probs=0.01, na.rm=T)~NA_real_, 
+#                              POVERTY_CHANGE>quantile(POVERTY_CHANGE, probs=0.99, na.rm=T)~NA_real_,
+#                              TRUE~POVERTY_CHANGE)) %>% ungroup()
+           
+
+
+
+global_dat %>% group_by(ECONOMY) %>% 
+  summarise(n(),  n.notmiss=sum(!is.na(POVERTY_CHANGE)),
+            min=min(POVERTY_CHANGE, na.rm = TRUE), 
+            max=max(POVERTY_CHANGE,  na.rm = TRUE))
+
+
+quantile(global_dat$POVERTY_CHANGE, seq(0,1,0.01), na.rm = TRUE)
+
+
+table(is.na(global_dat$POVERTY_CHANGE))
+
+global_dat %>% group_by(ECON_URBAN) %>% 
+  summarise(cor(POP_CHANGE, POVERTY_CHANGE, use="complete.obs"))
+
+
+```
+
+
+
+### Age  
+
+create working age groups 
+
+https://www.oecd.org/en/data/indicators/employment-rate-by-age-group.html 
+
+people aged 15-64 (the working age population)
+
+15 to 24 (those just entering the labour market following education); people aged 25 to 54 (those in their prime working lives); people aged 55 to 64 (those passing the peak of their career and approaching retirement)
+
+
+```{r}
+
+#working age categories
+# work 15-64
+#young 15-24
+#prime 25-54
+#old 55-64
+
+colnames(global_dat)
+
+pct_00_work <- paste0("pct_age_", c(seq(15, 60, by=5)), "_2000")
+pct_20_work <- paste0("pct_age_", c(seq(15, 60, by=5)), "_2020")
+
+pct_00_work_young <- paste0("pct_age_", c(seq(15, 20, by=5)), "_2000")
+pct_20_work_young <- paste0("pct_age_", c(seq(15, 20, by=5)), "_2020")
+
+pct_00_work_prime <- paste0("pct_age_", c(seq(25, 50, by=5)), "_2000")
+pct_20_work_prime <- paste0("pct_age_", c(seq(25, 50, by=5)), "_2020")
+
+pct_00_work_old <- paste0("pct_age_", c(seq(55, 60, by=5)), "_2000")
+pct_20_work_old <- paste0("pct_age_", c(seq(55, 60, by=5)), "_2020")
+
+pct_00_retire <- paste0("pct_age_", c(seq(65, 80, by=5)), "_2000")
+pct_20_retire <- paste0("pct_age_", c(seq(65, 80, by=5)), "_2020")
+
+
+global_dat <- global_dat %>%
+  mutate(pct_age_work_2000 = rowSums(across(all_of(pct_00_work)))) %>% 
+  mutate(pct_age_work_2020 = rowSums(across(all_of(pct_20_work)))) %>% 
+  #young wrk
+  mutate(pct_age_work_young_2000 = rowSums(across(all_of(pct_00_work_young)))) %>% 
+  mutate(pct_age_work_young_2020 = rowSums(across(all_of(pct_20_work_young)))) %>% 
+  #prime wrk
+  mutate(pct_age_work_prime_2000 = rowSums(across(all_of(pct_00_work_prime)))) %>% 
+  mutate(pct_age_work_prime_2020 = rowSums(across(all_of(pct_20_work_prime)))) %>% 
+  #old wrk
+  mutate(pct_age_work_old_2000 = rowSums(across(all_of(pct_00_work_old)))) %>% 
+  mutate(pct_age_work_old_2020 = rowSums(across(all_of(pct_20_work_old)))) %>% 
+  #retire
+  mutate(pct_age_retire_2000 = rowSums(across(all_of(pct_00_retire)))) %>% 
+  mutate(pct_age_retire_2020 = rowSums(across(all_of(pct_20_retire))))  
+
+
+
+check<- global_dat %>% select(total_age_00,pct_00_work, pct_age_work_2000)
+
+
+```
+
+
+```{r}
+
+#now pair up at take differences 
+
+col_diff<-  c(paste0("pct_age_", c(0, 1, seq(5, 80, by=5))), 
+              "pct_age_work", "pct_age_work_young", 
+              "pct_age_work_prime", "pct_age_work_old", "pct_age_retire")
+
+
+for (col in col_diff) {
+  global_dat <- global_dat %>%
+    mutate("{col}_DIFF" := !!sym(paste0(col, "_2020")) - !!sym(paste0(col, "_2000")))
+}
+
+
+summary(global_dat %>% select(pct_age_0_DIFF:pct_age_retire_DIFF))
+
+
+#trim
+
+
+age_diff_names<- paste0(col_diff, "_DIFF")
+
+global_dat <- global_dat %>%
+  group_by(ECONOMY) %>%
+  mutate(across(all_of(age_diff_names), 
+                ~ case_when(
+                  . < quantile(., probs = 0.01, na.rm = TRUE) ~ NA_real_,
+                  . > quantile(., probs = 0.99, na.rm = TRUE) ~ NA_real_,
+                  TRUE ~ .
+                ))) %>%
+  ungroup()
+
+
+global_dat <- global_dat %>%
+  group_by(ECONOMY) %>%
+  mutate(across(all_of(age_diff_names), 
+                ~ case_when(
+                  is.na(POP_CHANGE) ~ NA_real_,
+                  TRUE ~ .
+                ))) %>%
+  ungroup()
+
+
+summary(global_dat %>%   select(pct_age_0_DIFF:pct_age_retire_DIFF))
+
+
+```
+
+
+
+```{r}
+
+#median age
+
+global_dat<- global_dat %>% 
+  mutate(median_age_DIFF=median_age_2020-median_age_2000, 
+         median_age_CHANGE=(median_age_2020-median_age_2000)/median_age_2000)
+
+summary(global_dat$median_age_DIFF)
+summary(global_dat$median_age_CHANGE)
+
+
+```
+
+
+
+
+```{r}
+
+#sex
+
+global_dat<- global_dat %>% mutate(pct_females_DIFF=pct_females_20-pct_females_00, 
+                      pct_males_DIFF=pct_males_20-pct_males_00 )
+
+summary(global_dat$pct_males_DIFF)
+summary(global_dat$pct_females_DIFF)
+
+
+```
+
+
+
+### EXPORT
+
+
+```{r}
+
+
+global_dat<- global_dat %>% select(ISO_A3:urban, urban_rural, POP_CHANGE, GDP_CHANGE, GDP_PC_CHANGE,
+                                   HDI_CHANGE, HDI_CHANGE_INT_00, HDI_DIFF_INT_00,POVERTY_CHANGE,
+                      pct_age_0_DIFF:pct_age_retire_DIFF, median_age_DIFF, median_age_CHANGE,
+                      pct_males_DIFF, pct_females_DIFF,
+                      everything())
+
+
+relationships<-cor(global_dat %>% select(POP_CHANGE:pct_females_DIFF), use = "complete.obs")
+
+
+```
+
+
+```{r}
+
+saveRDS(global_dat, file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat_ready.rds")
+
+
+write_csv(global_dat, file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat_ready.csv")
+
+
+
+```
+
+
+

@@ -1,0 +1,269 @@
+---
+title: "Global country data"
+output: html_document
+date: "2025-02-16"
+---
+
+
+```{r setup, include=FALSE}
+
+library(data.table)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(haven)
+library(mgcv)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(broom)
+library(ggplot2)
+
+options(scipen = 999)
+
+`%!in%` = Negate(`%in%`)
+
+
+```
+
+
+#create full dataset 
+
+```{r}
+
+gdp_country_long<- read_csv("/mnt/theia/implications/dmed_global_data/gdp country/GDP_PPP_country_interpolate_long.csv")
+
+gdp_capita_long<- read_csv("/mnt/theia/implications/dmed_global_data/gdp capita country/gdp_capita_country_interpolate_long.csv")
+
+rppi_long<- read_csv('/mnt/theia/implications/dmed_global_data/rppi/rppi_interpolate_long.csv')
+
+
+rppi_long<- rppi_long %>% mutate(ISO=case_when(ISO=="CKK"~"COK", ISO=="CAY"~"CYM", TRUE~ISO))
+
+
+PLI_dat_long<- read_csv("/mnt/theia/implications/dmed_global_data/cost_of_living_PLI/PLI_interpolate_long.csv")
+
+PLI_dat_long<- PLI_dat_long %>% rename(ISO=ISO_A3)
+
+
+debt_long<- read_csv("/mnt/theia/implications/dmed_global_data/debt_to_income_ratio/dti_interpolate_long.csv")
+
+credit_long<- read_csv("/mnt/theia/implications/dmed_global_data/debt_to_income_ratio/credit_interpolate_long.csv")
+
+debt_gni_long<- read_csv("/mnt/theia/implications/dmed_global_data/debt_gni/debt_GNI_interpolate_long.csv")
+
+unemployment_long<- read_csv("/mnt/theia/implications/dmed_global_data/unemployment/unemploy_interpolate_long.csv")
+
+
+income_long<- read_csv("/mnt/theia/implications/dmed_global_data/gni_income/GNI_income_interpolate_long.csv")
+
+
+nativity_long<- read_csv("/mnt/theia/implications/dmed_global_data/nativity/international_migrant_stock.csv")
+
+pop_long<- read_csv("/mnt/theia/implications/dmed_global_data/population country/pop_country_interpolate_long.csv")
+
+
+cppi_long<- read_csv("/mnt/theia/implications/zhirsch/fs/international/cre/cppi_interpolate_long.csv")
+
+
+```
+
+```{r}
+
+
+country_data_long<- gdp_country_long %>% 
+  left_join(gdp_capita_long, by=c("ISO", "year")) %>% 
+  left_join(rppi_long, by=c("ISO", "year")) %>% 
+  left_join(debt_long, by=c("ISO", "year")) %>%
+    left_join(credit_long, by=c("ISO", "year")) %>% 
+  left_join(debt_gni_long, by=c("ISO", "year")) %>% 
+  left_join(unemployment_long, by=c("ISO", "year")) %>% 
+  left_join(income_long, by=c("ISO", "year")) %>% 
+  left_join(cppi_long, by=c("ISO", "year"))
+
+
+
+```
+
+```{r}
+
+#compute lag and change 
+country_data_long<- country_data_long %>% arrange(ISO, year)
+
+country_data_long <- country_data_long %>%
+  arrange(ISO, year) %>%
+  group_by(ISO) %>%
+  mutate(across(gdp:cppi, list(lag = ~dplyr::lag(.)), .names = "{.col}_lag")) %>%  # Create lagged variables
+  mutate(across(gdp:cppi, 
+                ~ (. - get(paste0(cur_column(), "_lag"))) / get(paste0(cur_column(), "_lag")),
+                .names = "{.col}_change")) %>%  # Compute log difference change
+  ungroup()
+
+look <- country_data_long %>% select(ISO:gdp, gdp_lag, gdp_change)
+
+```
+
+```{r}
+
+#for PLI include only select years where data is available
+
+
+PLI_dat_long<- gdp_country_long %>% 
+  left_join(PLI_dat_long, by=c("ISO", "year"))
+
+PLI_dat_long<- PLI_dat_long %>% arrange(ISO, year)
+
+
+
+PLI_dat_long <- PLI_dat_long %>%
+  filter(year %in% c(2005, 2017, 2021)) %>%  # Filter only relevant years for PLI
+  group_by(ISO) %>%
+  mutate(PLI_lag = dplyr::lag(PLI),  # Create lagged PLI variable
+         PLI_change = (PLI - PLI_lag)/ PLI_lag) %>%  # Compute change
+  mutate(gdp_lag = dplyr::lag(gdp),  # Create lagged  variable
+         gdp_change_PLI = (gdp - gdp_lag)/ gdp_lag) %>%  # Compute change
+  ungroup()  # Ungroup after computation
+
+PLI_dat_long<- PLI_dat_long %>% select(ISO, year, PLI, PLI_lag, PLI_change, gdp_change_PLI)
+
+#link to full data
+
+country_data_long<- country_data_long %>% left_join(PLI_dat_long, by=c("ISO", "year"))
+
+
+summary(country_data_long)
+
+```
+
+```{r}
+
+
+
+#for nativity include only  years where data is available
+
+nativity_long<- nativity_long %>% mutate(year=ifelse(year==2024, 2023, year))
+
+nativity_dat_long<- pop_long %>% 
+  left_join(nativity_long, by=c("ISO", "year")) 
+
+nativity_dat_long<- nativity_dat_long %>% arrange(ISO, year)
+
+
+
+nativity_dat_long <- nativity_dat_long %>%
+  filter(year %in% c(1995,2000, 2005, 2010, 2015, 2020, 2023)) %>%  # Filter only relevant years for nativity
+  group_by(ISO) %>%
+  mutate(foreign_born_lag = dplyr::lag(foreign_born),  # Create lagged nativity variable
+         foreign_born_diff = (foreign_born - foreign_born_lag)/100) %>%  # Compute change
+    mutate(pop_lag = dplyr::lag(pop),  # Create lagged  variable
+         pop_change_foreign_born = (pop - pop_lag)/ pop_lag) %>% 
+  ungroup()  # Ungroup after computation
+
+
+nativity_dat_long<- nativity_dat_long %>% select(ISO, year, foreign_born, foreign_born_lag, 
+                                                foreign_born_diff, 
+                                                 pop_change_foreign_born
+                                                 )
+
+#link to full data
+
+country_data_long<- country_data_long %>% left_join(nativity_dat_long, by=c("ISO", "year"))
+
+summary(country_data_long$foreign_born_diff)
+
+summary(country_data_long$pop_change_foreign_born)
+
+
+
+```
+
+
+
+```{r}
+#add in economy
+
+ISO_country<- read_csv("/mnt/theia/implications/dmed_global_data/ISO_KEY.csv")
+
+country_data_long<- ISO_country  %>% inner_join(country_data_long, by=c("ISO_A3"="ISO"))
+
+
+```
+
+
+
+
+
+```{r}
+#filter outliers
+
+# Define variables to clean
+colnames(country_data_long)
+variables <- c("gdp_change","gdp_capita_change","rppi_change", "dti_change", "credit_change","debt_gni_change", "unemploy_change", 
+               "income_change", "cppi_change","PLI_change", "foreign_born_diff", "gdp_change_PLI", "pop_change_foreign_born")
+
+# Apply outlier filtering for each variable within groups
+country_data_long <- country_data_long %>% 
+  mutate(across(all_of(variables), 
+                ~ case_when(
+                  . < quantile(., probs = 0.01, na.rm = TRUE) ~ NA_real_,
+                  . > quantile(., probs = 0.99, na.rm = TRUE) ~ NA_real_,
+                  TRUE ~ .
+                ), 
+                .names = "{.col}")) %>% 
+  ungroup()
+
+
+summary(country_data_long)
+
+```
+
+
+```{r}
+
+#remove rre that are the same 
+
+find<- country_data_long %>% group_by(rppi_change) %>% summarise(n=n())
+
+find<- find %>% filter(n==139)
+
+same<- country_data_long %>% filter(rppi_change %in% find$rppi_change)
+
+country_data_long<- country_data_long %>% mutate(rppi_change=case_when(ISO_A3 %in% same$ISO_A3 ~ NA_real_, TRUE~rppi_change))
+  
+
+
+
+```
+
+
+
+```{r}
+
+#collapse into three categores
+
+country_data_long %>% group_by(ECONOMY) %>% summarise(n())
+
+econ_levels <- sort(unique(country_data_long$ECONOMY))
+
+econ_levels
+
+
+country_data_long<- country_data_long %>% mutate(ECONOMY_COLLAPSE=case_when(ECONOMY %in% econ_levels[1:2]~"Developed", 
+                                                  ECONOMY %in% econ_levels[3:5]~"Emerging", 
+                                                  ECONOMY %in% econ_levels[6:7]~"Developing", TRUE~NA)) %>% 
+  mutate(ECONOMY_COLLAPSE=factor(ECONOMY_COLLAPSE, c("Developed", "Emerging", "Developing")))
+
+country_data_long %>% group_by(ECONOMY_COLLAPSE) %>% summarise(n())
+
+
+```
+
+```{r}
+
+saveRDS(country_data_long, "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_country_data_yearly_long.rds")
+
+
+```
+
+

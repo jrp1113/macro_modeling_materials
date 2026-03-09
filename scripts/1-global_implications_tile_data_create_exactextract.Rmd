@@ -1,0 +1,688 @@
+---
+title: "1-global_implications_merge"
+output: html_document
+date: "2024-10-09"
+---
+
+```{r setup, include=FALSE}
+
+
+library(data.table)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(patchwork)
+library(mgcv)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(sf)
+library(terra)
+library(exactextractr)
+
+
+
+`%!in%` = Negate(`%in%`)
+
+
+```
+
+
+### Global grid data 
+
+As a shapefile and sliced to country shapes
+
+```{r}
+
+#global grid from climate team 
+global_grid <- st_read("/mnt/theia/implications/zhirsch/fs/international/handoff/implication_tile_v5.shp")
+
+
+global_grid_df<- global_grid %>% st_drop_geometry()
+
+urban_sf<- global_grid %>% filter(urban=="T")
+
+st_write(urban_sf, "/mnt/theia/implications/dmed_global_data/urban_rural/urban_12km/urban_12km.shp")
+
+```
+
+
+
+### Gridded population data 
+
+```{r}
+
+
+#population rasters from zach 
+pop_00<- rast("/mnt/theia/implications/zhirsch/fs/international/intl_population/gpw_v4_population_count_adjusted_to_2015_unwpp_country_totals_rev11_2000_30_sec.tif")
+
+names(pop_00)<- "pop_00"
+
+
+pop_20<- rast("/mnt/theia/implications/zhirsch/fs/international/intl_population/gpw_v4_population_count_adjusted_to_2015_unwpp_country_totals_rev11_2020_30_sec.tif")
+
+
+names(pop_20)<- "pop_20"
+
+
+ncell(pop_00)
+ncell(pop_20)
+
+
+#sum before 
+pop_00_sum_before <- global(pop_00, fun = "sum", na.rm = TRUE)
+pop_20_sum_before <- global(pop_20, fun = "sum", na.rm = TRUE)
+
+
+###project to match global grid
+pop_00 <- terra::project(pop_00, crs(global_grid))  
+pop_20 <- terra::project(pop_20, crs(global_grid))  
+
+
+###transfer values of pop raster to global grid using exact extract 
+
+pop_00 <- exact_extract(pop_00, global_grid, fun = "sum", progress = T)
+pop_20 <- exact_extract(pop_20, global_grid, fun = "sum", progress = T)
+
+global_grid_df$pop_00<- pop_00
+global_grid_df$pop_20<- pop_20
+
+
+
+global_grid$pop_00<- pop_00
+global_grid$pop_20<- pop_20
+
+
+st_write(global_grid, "~/international/data/global_pop_shp/global_pop_shp.shp")
+
+#sum after 
+
+global_grid_df %>%  
+  summarise(total_pop_00=sum(pop_00, na.rm = T), 
+               total_pop_20=sum(pop_20, na.rm=T))
+
+
+```
+
+
+
+### Urbanization data 
+https://www.pnas.org/doi/10.1073/pnas.2011990118#data-availability 
+
+```{r}
+
+urban_raster<- rast("/mnt/theia/implications/dmed_global_data/urban_rural/Urban-Rural Catchment Areas (URCA).tif")
+
+
+names(urban_raster)<- "urban_rural"
+
+
+ncell(urban_raster)
+
+###project to match global grid
+urban_raster <- terra::project(urban_raster, crs(global_grid))  
+
+
+###transfer values of raster to global grid using exact extract
+urban_raster <- exact_extract(urban_raster, global_grid, fun = "min", progress = T)
+
+
+global_grid_df$urban_rural<- urban_raster
+
+global_grid_df %>%  
+  group_by(urban_rural<=7, urban) %>% summarise(n())
+
+
+table(is.na(global_grid_df$urban_rural))
+
+```
+
+
+#### GDP 
+
+https://zenodo.org/records/7898409
+https://www.nature.com/articles/s41597-022-01300-x#Sec2
+
+```{r}
+
+
+file_path<- "/mnt/theia/implications/dmed_global_data/gdp"
+
+tif_files <- list.files(file_path, pattern = "\\.tif$", full.names = TRUE)
+
+#i only wanted historic gdp not projected 
+tif_files<- tif_files[1:21]
+
+gdp_stack <- rast(tif_files)
+
+names(gdp_stack)
+
+
+
+###project to match global grid
+gdp_stack <- terra::project(gdp_stack, crs(global_grid))  
+ncell(gdp_stack)
+
+###transfer values of raster to global grid using exact extract 
+gdp_stack <- exact_extract(gdp_stack, global_grid, fun = "sum", progress = T)
+
+
+colnames(gdp_stack)<- gsub("sum.", "", colnames(gdp_stack))
+
+global_grid_df<- cbind(global_grid_df, gdp_stack)
+
+
+```
+
+
+
+#### GDP per capita
+
+```{r}
+
+gdp_capita<- rast("/mnt/theia/implications/dmed_global_data/gdp capita gridded Kummu/rast_adm2_gdp_perCapita_1990_2022.tif")
+
+ncell(gdp_capita)
+
+gdp_capita_names<- names(gdp_capita)
+
+summary(values(gdp_capita[[33]]), na.rm = TRUE)
+
+#strange float issue need to apply this
+gdp_capita <- terra::app(gdp_capita, fun = as.numeric)
+
+ncell(gdp_capita)
+
+names(gdp_capita)<-gdp_capita_names 
+names(gdp_capita)
+
+summary(values(gdp_capita[[33]]), na.rm = TRUE)
+
+
+###project to match global grid
+gdp_capita <- terra::project(gdp_capita, crs(global_grid))  
+ncell(gdp_capita)
+
+
+###transfer values of raster to global grid using exact extract 
+gdp_capita <- exact_extract(gdp_capita, global_grid, fun = "mean", progress = T)
+
+
+colnames(gdp_capita)<- gsub("mean.", "", colnames(gdp_capita))
+
+global_grid_df<- cbind(global_grid_df, gdp_capita)
+
+
+```
+
+
+#### Human Development Index 
+
+https://www.mosaiks.org/hdi
+
+```{r}
+
+file_path<- "/mnt/theia/implications/dmed_global_data/hdi"
+
+tif_files <- list.files(file_path, pattern = "\\.tif$", full.names = TRUE)
+
+hdi_stack <- rast(tif_files)
+
+names(hdi_stack)<- gsub("_raster_predictions", "", names(hdi_stack))
+
+
+
+###project to match global grid
+hdi_stack <- terra::project(hdi_stack, crs(global_grid))  
+ncell(hdi_stack)
+
+
+###transfer values of raster to global grid using exact extract 
+hdi_stack <- exact_extract(hdi_stack, global_grid, fun = "mean", progress = T)
+
+colnames(hdi_stack)<- gsub("mean.", "", colnames(hdi_stack))
+
+global_grid_df<- cbind(global_grid_df, hdi_stack)
+
+```
+
+#### Poverty 
+
+https://www.earthdata.nasa.gov/data/catalog/sedac-ciesin-sedac-pmp-grdi-2010-2020-1.00
+
+```{r}
+
+#2010-2020
+poverty<- rast("/mnt/theia/implications/zhirsch/fs/international/intl_macroeconomic/povmap-grdi-v1.tif")
+
+
+
+names(poverty)<- "poverty_20"
+
+
+ncell(poverty)
+
+###project to match global grid
+poverty <- terra::project(poverty, crs(global_grid))  
+
+
+###transfer values of raster to global grid using exact extract
+poverty <- exact_extract(poverty, global_grid, fun = "mean", progress = T)
+
+
+global_grid_df$poverty_20<- poverty
+
+
+summary(global_grid_df$poverty_20)
+
+
+
+```
+
+
+
+#### Age and sex data 
+
+https://hub.worldpop.org/project/categories?id=8
+
+
+```{r, eval=F}
+
+# data pull
+# options(timeout = 3600*24)  # Set timeout to 24 hours
+# 
+# 
+# # Create the list of file names
+# females_00 <- paste0("global_f_", c(0, 1, seq(5, 80, by=5)), "_2000_1km")
+# 
+# males_00 <- paste0("global_m_", c(0, 1, seq(5, 80, by=5)), "_2000_1km")
+# 
+# females_20 <- paste0("global_f_", c(0, 1, seq(5, 80, by=5)), "_2020_1km")
+# 
+# males_20 <- paste0("global_m_", c(0, 1, seq(5, 80, by=5)), "_2020_1km")
+# 
+# 
+# # Start tracking time
+# start_time <- Sys.time()
+# 
+# # Loop through each file name and download the corresponding file
+# for (i in males_20) {
+#   
+#   url <- paste0("https://data.worldpop.org/GIS/AgeSex_structures/Global_2000_2020/2020/0_Mosaicked/global_mosaic_1km/", i, ".tif")
+#   
+#   # Define the destination file path
+#   destfile <- paste0("/mnt/hyperion/data/implications/dmed_global_data/age_sex/", i, ".tif")
+#   
+#   # Download the file
+#   download.file(url, destfile)
+#   
+# 
+# }
+# 
+# # End tracking time
+# end_time <- Sys.time()
+# 
+# # Calculate the total time taken
+# time_taken <- end_time - start_time
+# print(time_taken)
+
+```
+
+
+```{r}
+
+# # takes long time to process all files 
+# 
+# 
+# # Define file path and get the list of .tif files
+# file_path <- "/mnt/theia/implications/dmed_global_data/age_sex"
+# tif_files <- list.files(file_path, pattern = "\\.tif$", full.names = TRUE)
+# 
+# #note had to do it in chunks
+# tif_files<- tif_files[36:72]
+# 
+# # Initialize an empty list to store extracted values
+# extracted_list <- list()
+# 
+# # Loop through each .tif file
+# for (i in seq_along(tif_files)) {
+#     # Load the individual raster
+#     age_raster <- rast(tif_files[i])
+# 
+#     # Project to match global grid
+#     age_raster <- terra::project(age_raster, crs(global_grid))
+# 
+#     # exact extract calculation (returns a numeric vector)
+#     extracted_values <- exact_extract(age_raster, global_grid, fun = "sum", progress = TRUE)
+# 
+#     # Store extracted values in a named list
+#     extracted_list[[basename(tif_files[i])]] <- extracted_values
+# 
+#     print(paste("Completed:", basename(tif_files[i])))
+# 
+#     # Clear memory for each loop iteration
+#     rm(age_raster, extracted_values)
+#     gc()
+# }
+# 
+# # Convert list to a dataframe (each column represents a file's extracted values)
+# extracted_df <- do.call(cbind, extracted_list)
+# 
+# extracted_df<- cbind(global_grid_df$tile_id, extracted_df)
+# 
+# extracted_df<- as.data.frame(extracted_df)
+# 
+# 
+# colnames(extracted_df)<- gsub("global_|_1km|.tif", "", colnames(extracted_df))
+# 
+# 
+# extracted_df<- extracted_df %>% rename(tile_id=V1)
+# 
+# 
+# # Save the final dataframe as a CSV
+# write.csv(extracted_df,
+#           file = "/mnt/theia/implications/dmed_global_data/age_sex/processed_global_grid/processed__male_age_data_exactextract.csv", row.names = FALSE)
+# 
+# summary(extracted_df)
+
+```
+
+
+
+```{r}
+
+
+females<- read_csv("/mnt/theia/implications/dmed_global_data/age_sex/processed_global_grid/processed__female_age_data_exactextract.csv")
+
+males<- read_csv("/mnt/theia/implications/dmed_global_data/age_sex/processed_global_grid/processed__male_age_data_exactextract.csv")
+
+age_sex<- females %>% full_join(males, by="tile_id")
+
+#summary(age_sex)
+
+```
+
+
+Creating percentages and median age 
+
+
+```{r}
+
+#first combine male and female to get age categories 
+
+age_sex <- age_sex %>%
+  # Use across with starts_with to sum female and male columns for each age group and year
+  mutate(across(starts_with("f_"), 
+                   ~ . + get(sub("f_", "m_", cur_column())), 
+                   .names = "age_{col}")) %>% 
+  # Rename columns to remove "f_" prefix and keep only age and year
+  rename_with(~ sub("^age_f_", "age_", .), starts_with("age_f_"))
+
+
+check<- age_sex %>% select(f_25_2000, m_25_2000, age_25_2000, 
+                              f_25_2020, m_25_2020, age_25_2020) 
+
+```
+
+```{r}
+
+#get total across all age groups for 2000 and 2020
+
+age_00 <- paste0("age_", c(0, 1, seq(5, 80, by=5)), "_2000")
+age_20 <- paste0("age_", c(0, 1, seq(5, 80, by=5)), "_2020")
+
+age_sex <- age_sex %>%
+  mutate(total_age_00 = rowSums(across(all_of(age_00)), na.rm = TRUE)) %>% 
+  mutate(total_age_20 = rowSums(across(all_of(age_20)), na.rm = TRUE))
+
+
+check<- age_sex %>% select(age_0_2000:age_80_2000,total_age_00) 
+check<- age_sex %>% select(age_0_2020:age_80_2020,total_age_20) 
+
+quantile(age_sex$total_age_00, seq(0,1,0.01))
+quantile(age_sex$total_age_20, seq(0,1,0.01))
+
+
+
+
+```
+
+
+```{r}
+
+age_sex <- age_sex %>%
+  mutate(across(all_of(age_00), ~ if_else(total_age_00 < 1, NA, round(100 * (. / total_age_00), 2)), .names = "pct_{.col}")) %>%
+  mutate(across(all_of(age_20), ~ if_else(total_age_20 < 1, NA, round(100 * (. / total_age_20), 2)), .names = "pct_{.col}"))
+
+
+check<- age_sex %>% select(total_age_00,age_00, pct_age_0_2000:pct_age_80_2000)
+
+pct_age_00 <- paste0("pct_age_", c(0, 1, seq(5, 80, by=5)), "_2000")
+pct_age_20 <- paste0("pct_age_", c(0, 1, seq(5, 80, by=5)), "_2020")
+
+#check adding up to 100 
+check <- age_sex %>%
+  mutate(check_00 = rowSums(across(all_of(pct_age_00)))) %>% 
+  mutate(check_20 = rowSums(across(all_of(pct_age_20)))) %>% 
+  select(check_00, check_20, total_age_00,age_00, pct_age_0_2000:pct_age_80_2000)
+
+table(check$check_00, useNA = "ifany")
+table(check$check_20, useNA = "ifany")
+
+
+```
+
+### Median age 
+
+```{r}
+
+colnames(age_sex)
+
+
+
+age_2000<- age_sex %>% select(tile_id, pct_age_0_2000:pct_age_80_2000)
+
+age_2020<- age_sex %>% select(tile_id, pct_age_0_2020:pct_age_80_2020)
+
+
+age_boundaries <- data.frame(
+  column = colnames(age_2000)[-1], 
+  lower = c(0, 1, seq(5, 80, by=5)),
+  upper = c(1, 5, seq(10, 85, by=5))
+)
+
+
+
+# 2000
+
+# Reshape data into long format
+age_2000_long <- age_2000 %>%
+  pivot_longer(cols = starts_with("pct_age"), names_to = "age_group", values_to = "percentage") %>%
+  left_join(age_boundaries, by = c("age_group" = "column"))
+
+# Calculate cumulative percentages by tile_id
+age_2000_long <- age_2000_long %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, lower) %>%
+  mutate(cumulative = cumsum(percentage))
+
+# Estimate median age 
+
+median_age_2000 <- age_2000_long %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, lower) %>%
+  mutate(
+    cumulative_prev = dplyr::lag(cumulative, default = 0)  # Correct cumulative_prev
+  ) %>%
+  filter(cumulative >= 50) %>%  # Only keep rows where cumulative >= 50%
+  slice(1) %>%  # Take the first row where cumulative >= 50%
+  mutate(
+    median_age_2000 = lower + ((50 - cumulative_prev) / percentage) * (upper - lower)  # Interpolation
+  ) 
+
+
+
+median_age_2000 <- median_age_2000 %>%
+  select(tile_id, median_age_2000)
+
+
+#2020
+
+
+
+age_boundaries <- data.frame(
+  column = colnames(age_2020)[-1], 
+  lower = c(0, 1, seq(5, 80, by=5)),
+  upper = c(1, 5, seq(10, 85, by=5))
+)
+
+
+# Reshape data into long format
+age_2020_long <- age_2020 %>%
+  pivot_longer(cols = starts_with("pct_age"), names_to = "age_group", values_to = "percentage") %>%
+  left_join(age_boundaries, by = c("age_group" = "column"))
+
+# Calculate cumulative percentages by tile_id
+age_2020_long <- age_2020_long %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, lower) %>%
+  mutate(cumulative = cumsum(percentage))
+
+# Estimate median age 
+
+median_age_2020 <- age_2020_long %>%
+  group_by(tile_id) %>%
+  arrange(tile_id, lower) %>%
+  mutate(
+    cumulative_prev = dplyr::lag(cumulative, default = 0)  # Correct cumulative_prev
+  ) %>%
+  filter(cumulative >= 50) %>%  # Only keep rows where cumulative >= 50%
+  slice(1) %>%  # Take the first row where cumulative >= 50%
+  mutate(
+    median_age_2020 = lower + ((50 - cumulative_prev) / percentage) * (upper - lower)  # Interpolation
+  ) 
+
+
+
+median_age_2020 <- median_age_2020 %>%
+  select(tile_id, median_age_2020)
+
+age_sex<- age_sex %>% 
+  left_join(median_age_2000, by="tile_id") %>% 
+  left_join(median_age_2020, by="tile_id")
+
+
+
+look<- age_sex %>% select(tile_id,  median_age_2000, median_age_2020)
+ 
+summary(age_sex$median_age_2000)
+
+summary(age_sex$median_age_2020)
+
+
+```
+
+
+Sex
+
+```{r}
+
+
+f_00 <- paste0("f_", c(0, 1, seq(5, 80, by=5)), "_2000")
+f_20 <- paste0("f_", c(0, 1, seq(5, 80, by=5)), "_2020")
+
+m_00 <- paste0("m_", c(0, 1, seq(5, 80, by=5)), "_2000")
+m_20 <- paste0("m_", c(0, 1, seq(5, 80, by=5)), "_2020")
+
+
+
+#first sum all age groups for 2000 and 2020
+age_sex <- age_sex %>%
+  mutate(females_00 = rowSums(across(all_of(f_00)), na.rm = TRUE)) %>% 
+  mutate(females_20 = rowSums(across(all_of(f_20)), na.rm = TRUE)) %>% 
+  mutate(males_00 = rowSums(across(all_of(m_00)), na.rm = TRUE)) %>% 
+  mutate(males_20 = rowSums(across(all_of(m_20)), na.rm = TRUE)) 
+
+
+check<- age_sex %>% select(total_age_00, females_00, males_00, m_00) 
+
+
+#now compute the percentages
+
+age_sex<- age_sex %>% 
+  mutate(pct_females_00=round(100*(females_00/total_age_00),2), 
+         pct_males_00=round(100*(males_00/total_age_00),2),
+         pct_females_20=round(100*(females_20/total_age_20),2),
+         pct_males_20=round(100*(males_20/total_age_20),2))
+
+
+check<- age_sex %>% select(total_age_00, females_00, males_00, m_00, pct_females_00, pct_males_00) 
+
+
+```
+
+
+```{r}
+
+#link 
+
+colnames(age_sex)
+
+age_sex<- age_sex %>% 
+  select(tile_id, median_age_2000, median_age_2020, 
+         age_0_2000:age_80_2020, 
+          females_00, females_20, 
+         males_00, males_20,
+         everything())
+
+global_grid_df<- global_grid_df %>% full_join(age_sex, by="tile_id")
+
+
+```
+
+
+#### Export
+
+```{r}
+
+
+
+global_grid_df %>%
+  summarise_all(~ sum(is.na(.)))
+
+
+colnames(global_grid_df)
+
+```
+
+
+
+```{r}
+
+saveRDS(global_grid_df, file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat.rds")
+
+
+write_csv(global_grid_df, file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/global_dat.csv")
+
+
+saveRDS(global_grid_df, file = "/home/dmedgyesi/international/data/global_implications_data/global_dat.rds")
+
+
+write_csv(global_grid_df, file = "/home/dmedgyesi/international/data/global_implications_data/global_dat.csv")
+
+
+
+```
+
+
+```{r}
+
+median_age_df<- global_grid_df %>% select(tile_id, median_age_2020)
+
+write_csv(median_age_df, file = "/mnt/theia/implications/dmed_global_data/Global Implications Datasets/median_age_2020.csv")
+
+
+
+```
+
+
