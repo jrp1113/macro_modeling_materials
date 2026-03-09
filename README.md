@@ -2,6 +2,7 @@
 
 This repository is licensed under CC BY-NC 4.0.
 Commercial use is prohibited without permission.
+ https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.en
 
 The code supplied in this repo follow in the steps below in the production of the the macroeconomic models linking population change (desirability) to larger macroeconomic shifts.
 
